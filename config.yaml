@@ -1,5 +1,5 @@
 input_source:
-  path: C:/Users/demev/Downloads/911 Dispatch Relay/sim_client_resources/.storage
+  path: ''
   auto_detect: true
   server_fingerprint: GTA World
   use_watchdog: true
@@ -45,7 +45,7 @@ flagging:
     scope: own
   code_seven:
     enabled: true
-    scope: own
+    scope: all
 llm:
   enabled: true
   provider: openai_compatible
@@ -144,12 +144,18 @@ hotkeys:
   stop: ''
 ui:
   mode: gui
-  theme: dark
+  theme: light
   recent_limit: 20
   open_monitor: 0
   sidebar_collapsed: false
   debug: false
   minimize_to_tray: false
+updates:
+  enabled: true
+  check_on_start: true
+  manifest_url: https://api.github.com/repos/coopik/GTA-W-Dispatch-Relay/releases/latest
+  allow_prerelease: false
+  timeout: 15
 reporting:
   enabled: true
   webhook_url: https://discord.com/api/webhooks/1527758313704521788/LeZdaObHQbFKAd1DcotqtqMqX5MnfZzBK9MZGcRs7HJcPVVVVkScUatSwGNdFaXMwfwO

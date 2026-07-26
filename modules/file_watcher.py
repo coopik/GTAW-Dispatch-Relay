@@ -401,7 +401,8 @@ class FileWatcher:
         self.debounce = max(0.0, float(cfg.get("debounce_ms", 250) or 0) / 1000.0)
         self.retry_attempts = max(1, int(cfg.get("retry_attempts", 5) or 5))
         self.retry_delay = max(0.0, float(cfg.get("retry_delay", 0.15) or 0.0))
-        self.use_watchdog = bool(cfg.get("use_watchdog", True))
+        _uw = cfg.get("use_watchdog", True)
+        self.use_watchdog = True if _uw is None else bool(_uw)
         self.fingerprint = str(cfg.get("server_fingerprint") or SERVER_FINGERPRINT)
 
         self.resolved_path = ""
@@ -485,7 +486,8 @@ class FileWatcher:
 
     def _start_observer(self) -> None:
         if not self.use_watchdog:
-            self._log("Chat log: polling mode (watchdog disabled in settings).")
+            self._log("Chat log: polling mode - instant notifications are turned off in "
+                      "Settings > Chat log input > Use instant file notifications.")
             return
         try:
             from watchdog.observers import Observer

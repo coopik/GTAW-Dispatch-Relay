@@ -23,14 +23,14 @@ from modules.file_watcher import (
     strip_timestamps,
 )
 from modules.flagger import Flagger
-from modules.llm import LLMProcessor, spell_plates
+from modules.llm import LLMProcessor, spell_plates, strip_ten_codes
 from modules.player import AudioPlayer
 from modules.radiofx import RadioFX
 from modules.reporter import Reporter
 from modules.mdc_lookup import MDCManager
 from modules.tts import TTSEngine
 
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.5.0"
 
 BUNDLE_DIR = app_paths.bundle_dir()
 DEFAULT_CONFIG_PATH = os.path.join(BUNDLE_DIR, "config.yaml")
@@ -38,9 +38,44 @@ CONFIG_PATH = app_paths.ensure_user_config(DEFAULT_CONFIG_PATH)
 SCRIPT_DIR = BUNDLE_DIR
 
 
+def _deep_merge(base: dict, over: dict) -> dict:
+    out = dict(base or {})
+    for key, val in (over or {}).items():
+        if isinstance(val, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], val)
+        else:
+            out[key] = val
+    return out
+
+
+def _read_yaml(path: str) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+
 def load_config(path: str = CONFIG_PATH) -> dict:
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+    defaults = {}
+    if os.path.abspath(DEFAULT_CONFIG_PATH) != os.path.abspath(path):
+        defaults = _read_yaml(DEFAULT_CONFIG_PATH)
+    if not os.path.exists(path):
+        if not defaults:
+            with open(path, "r", encoding="utf-8") as f:
+                return yaml.safe_load(f) or {}
+        save_config(defaults, path)
+        return defaults
+    user = _read_yaml(path)
+    if not defaults:
+        return user
+    merged = _deep_merge(defaults, user)
+    if merged != user:
+        try:
+            save_config(merged, path)
+        except Exception:
+            pass
+    return merged
 
 
 def save_config(cfg: dict, path: str = CONFIG_PATH) -> None:
@@ -172,7 +207,7 @@ class DispatchRelay:
     def _speak_text(self, text: str, summary: str = "", alert: bool = True) -> None:
         if not text or not text.strip():
             return
-        text = spell_plates(text)
+        text = spell_plates(strip_ten_codes(text))
         self._log(f"DISPATCH: {text}")
         self.recent.appendleft(
             {
@@ -422,7 +457,7 @@ class DispatchRelay:
                 }
             )
             return
-        dispatch = spell_plates(dispatch)
+        dispatch = spell_plates(strip_ten_codes(dispatch))
         self._log(f"DISPATCH: {dispatch}")
         self.recent.appendleft(
             {

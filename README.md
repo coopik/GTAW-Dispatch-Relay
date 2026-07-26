@@ -311,6 +311,19 @@ Rules applied to call cards:
 
 ---
 
+## Updating
+
+The app updates itself. Open **About**: it shows the version you are running and checks for a newer
+one, and when an update exists an **Update and restart** button appears. It downloads the installer,
+installs it silently and reopens itself. Settings in `%APPDATA%\911 Dispatch Relay` are kept.
+
+To publish an update for other people, attach the `911DispatchRelay-Setup-x.y.z.exe` produced by
+`build.bat` to a GitHub release, and point `updates.manifest_url` in `config.yaml` at that repo's
+`releases/latest` API URL. Not using GitHub? Point it at any URL returning JSON like
+`{"version": "1.6.0", "url": "https://.../Setup.exe", "notes": "what changed", "sha256": "..."}`.
+Publishing a `sha256` is recommended: the download is checked against it and thrown away if it does
+not match.
+
 ## 11. Troubleshooting
 
 - **`No chat log file set`** - press **Detect file** on the Dashboard, or set `input_source.path` by hand (section 3).
@@ -383,7 +396,7 @@ pywin32 is entirely optional - without it you only lose the tray icon and the �
 ### Dispatch acknowledgements (code seven & clear)
 
 - **Code seven** (out of service / meal): "25T15, show me code seven" or "25T15, code seven at Pershing Square" → acknowledged with rotating LAPD wording.
-- **Clear / 10-8** (back in service): "25T15, show me clear", "25T15, clear", or "25T15, show me available" → acknowledged with rotating LAPD wording.
+- **Clear** (back in service): "25T15, show me clear", "25T15, clear", or "25T15, show me available" → acknowledged with rotating LAPD wording.
 - Both are on by default and configurable under **Settings > Flagging** (scope: your own call signs or all units).
 
 ---

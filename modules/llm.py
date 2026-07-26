@@ -732,6 +732,10 @@ _DEFAULT_LAPD_PROMPT = (
 
 _STYLE_ADDENDUM = (
     "REALISM AND CADENCE (always apply):\n"
+    "- NEVER use ten-codes such as 10-4, 10-8, 10-20 or 10-97. The LAPD does not "
+    "use them: say \"roger\", \"copy\", \"clear\", \"arrived\", \"stand by\" or "
+    "\"disregard\" instead. Response codes (Code 3, Code 6, Code 4, Code 7) and bare "
+    "penal-code numbers are correct LAPD usage and must stay.\n"
     "- Speak like a real LAPD Radio Telephone Operator: calm, clipped, and "
     "economical. No filler, no drama, and never narrate your own actions.\n"
     "- Say the location the way LAPD does, repeating it once for clarity, for "
@@ -900,7 +904,8 @@ class LLMProcessor:
         offline = build_mdc_response(result, callsign, acknowledged=acknowledged)
         if self.enabled and self.api_key:
             out = self._api_rewrite_prompt(
-                self._format_mdc_input(result, callsign, acknowledged=acknowledged), _MDC_PROMPT
+                self._format_mdc_input(result, callsign, acknowledged=acknowledged),
+                _MDC_PROMPT + _NO_TEN_CODES_RULE,
             )
             if out:
                 return out
@@ -936,7 +941,7 @@ class LLMProcessor:
                 "directly with the call sign and the findings."
             )
         user = "\n".join(header) + "\n\n--- MDC PAGE TEXT ---\n" + page_text
-        return self._api_rewrite_prompt(user, _MDC_PAGE_PROMPT)
+        return self._api_rewrite_prompt(user, _MDC_PAGE_PROMPT + _NO_TEN_CODES_RULE)
 
     # Substrings that identify a reasoning model whose completion budget must
     _REASONING_HINTS = (
@@ -1210,6 +1215,57 @@ def radio_location(raw: str) -> str | None:
         return None
     loc = loc.strip(" \t!?.,;:-")
     return loc or None
+
+
+_NO_TEN_CODES_RULE = (
+    "\n- NEVER use ten-codes such as 10-4, 10-8, 10-20 or 10-97. The LAPD does not "
+    "use them. Say \"roger\", \"copy\", \"clear\", \"arrived\", \"stand by\" or "
+    "\"disregard\" instead. Response codes (Code 3, Code 6, Code 4, Code 7) and bare "
+    "penal-code numbers such as 211 or 415 are correct LAPD usage and must stay.\n"
+)
+
+_TEN_CODE_PLAIN = {
+    "4": "roger", "6": "busy", "7": "out of service", "8": "clear and available",
+    "9": "say again", "10": "records check", "15": "in custody", "20": "location",
+    "22": "disregard", "23": "stand by", "28": "records check", "29": "records check",
+    "97": "arrived", "98": "assignment complete",
+}
+
+_TEN_CODE_SPELLED = {
+    "four": "roger", "six": "busy", "seven": "out of service",
+    "eight": "clear and available", "nine": "say again",
+    "twenty": "location", "ninetyseven": "arrived",
+}
+
+# A separator is required so that house numbers such as "104 Elgin" are not read
+# as the ten-code 10-4.
+_TEN_CODE_RE = re.compile(r"\b10[\s\-\u2013](\d{1,3})\b")
+_TEN_CODE_WORD_RE = re.compile(
+    r"\bten[\s\-](four|six|seven|eight|nine|twenty|ninety[\s\-]?seven)\b",
+    re.IGNORECASE,
+)
+
+
+def strip_ten_codes(text: str) -> str:
+    if not text:
+        return text
+
+    def plain(m):
+        return _TEN_CODE_PLAIN.get(m.group(1), "")
+
+    def spelled(m):
+        key = re.sub(r"[\s\-]", "", m.group(1)).lower()
+        return _TEN_CODE_SPELLED.get(key, "")
+
+    out = _TEN_CODE_RE.sub(plain, text)
+    out = _TEN_CODE_WORD_RE.sub(spelled, out)
+    if out == text:
+        return text
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r"\s+([,.;:!?])", r"\1", out)
+    out = re.sub(r"([,;:])\s*([,.;:])", r"\2", out)
+    out = re.sub(r"(^|[.!?]\s+)([a-z])", lambda m: m.group(1) + m.group(2).upper(), out)
+    return out.strip(" ,;:")
 
 
 def build_radio_dispatch(text: str, callsign: str | None = None) -> str:

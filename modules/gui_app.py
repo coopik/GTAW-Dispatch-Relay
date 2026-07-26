@@ -23,7 +23,7 @@ try:
 except Exception:
     usage = None
 
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.5.0"
 
 PALETTE = {
     "page": ("#f1f4f9", "#080d17"),
@@ -183,7 +183,7 @@ SETTINGS_SCHEMA = [
          "hint": "\"own\" answers only your own call signs; \"all\" answers any unit going code seven."},
         {"path": ["flagging", "clear_ack", "enabled"], "label": "Acknowledge clear / back in service", "kind": "bool",
          "hint": "Reply when a unit clears, e.g. \"<call sign>, show me clear\", \"<call sign>, clear\", "
-                 "or \"<call sign>, show me available\" (10-8)."},
+                 "or \"<call sign>, show me available\"."},
         {"path": ["flagging", "clear_ack", "scope"], "label": "Clear applies to", "kind": "choice",
          "choices": ["own", "all"],
          "hint": "\"own\" answers only your own call signs; \"all\" answers any unit clearing."},
@@ -1260,8 +1260,41 @@ class DispatchApp(ctk.CTk):
         )
         ctk.CTkLabel(card, text=text, font=self.f_b, justify="left", anchor="w",
                      text_color=PALETTE["text"]).grid(row=0, column=0, sticky="w", padx=22, pady=20)
+        upd = self._card(page)
+        upd.grid(row=2, column=0, sticky="ew", padx=26, pady=8)
+        upd.grid_columnconfigure(2, weight=1)
+        ctk.CTkLabel(upd, text="  Version", font=self.f_h, text_color=PALETTE["text"],
+                     image=self._icon("info", 18, IC_PRIMARY), compound="left").grid(
+            row=0, column=0, columnspan=3, sticky="w", padx=22, pady=(18, 2))
+        ctk.CTkLabel(upd, text=f"You are running version {APP_VERSION}.", font=self.f_bb,
+                     text_color=PALETTE["text"]).grid(row=1, column=0, columnspan=3,
+                                                      sticky="w", padx=22)
+        self._upd_status = ctk.CTkLabel(upd, text="", font=self.f_s, justify="left",
+                                        anchor="w", text_color=PALETTE["muted"])
+        self._upd_status.grid(row=2, column=0, columnspan=3, sticky="w", padx=22, pady=(3, 0))
+        self._upd_bar = ctk.CTkProgressBar(upd, height=10, corner_radius=6,
+                                           progress_color=PALETTE["primary"])
+        self._upd_bar.set(0)
+        self._upd_bar.grid(row=3, column=0, columnspan=3, sticky="ew", padx=22, pady=(8, 0))
+        self._upd_bar.grid_remove()
+        self._upd_btn = ctk.CTkButton(upd, text="  Check for updates", height=38, width=180,
+                                      corner_radius=10, font=self.f_bb,
+                                      fg_color=PALETTE["neutral"], text_color=PALETTE["text"],
+                                      hover_color=PALETTE["neutral_hover"],
+                                      image=self._icon("reload", 16, IC_DARK), compound="left",
+                                      command=self._check_updates)
+        self._upd_btn.grid(row=4, column=0, sticky="w", padx=(22, 8), pady=(14, 18))
+        self._upd_install = ctk.CTkButton(upd, text="  Update and restart", height=38, width=210,
+                                          corner_radius=10, font=self.f_bb,
+                                          fg_color=PALETTE["primary"], text_color="#ffffff",
+                                          hover_color=PALETTE["primary_hover"],
+                                          image=self._icon("save", 16, IC_WHITE), compound="left",
+                                          command=self._do_install_update)
+        self._upd_install.grid(row=4, column=1, sticky="w", pady=(14, 18))
+        self._upd_install.grid_remove()
+
         support = self._card(page)
-        support.grid(row=2, column=0, sticky="ew", padx=26, pady=8)
+        support.grid(row=3, column=0, sticky="ew", padx=26, pady=8)
         support.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(support, text="  Found a bug?", font=self.f_h, text_color=PALETTE["text"],
                      image=self._icon("info", 18, IC_PRIMARY), compound="left").grid(
@@ -1272,11 +1305,159 @@ class DispatchApp(ctk.CTk):
                      font=self.f_s, text_color=PALETTE["muted"]).grid(row=2, column=0, sticky="w", padx=22, pady=(0, 18))
 
         ctk.CTkLabel(page, text=f"911 Dispatch Relay  v{APP_VERSION}    (c) 2026 COOPIK - All rights reserved.", font=self.f_bb,
-                     text_color=PALETTE["text"]).grid(row=3, column=0, sticky="w", padx=30, pady=(8, 2))
+                     text_color=PALETTE["text"]).grid(row=4, column=0, sticky="w", padx=30, pady=(8, 2))
         ctk.CTkLabel(page, text="Audio stays on your machine - nothing is sent in-game.",
-                     font=self.f_s, text_color=PALETTE["muted"]).grid(row=4, column=0, sticky="w",
+                     font=self.f_s, text_color=PALETTE["muted"]).grid(row=5, column=0, sticky="w",
                                                                       padx=30, pady=(0, 12))
+        try:
+            if _get(self.relay.cfg, ["updates", "check_on_start"], True):
+                self.after(2500, lambda: self._check_updates(manual=False))
+        except Exception:
+            pass
         return page
+
+    def _updater(self):
+        obj = getattr(self, "_upd_obj", None)
+        if obj is None:
+            try:
+                from modules.updater import Updater
+
+                obj = Updater(self.relay.cfg, APP_VERSION)
+            except Exception:
+                obj = False
+            self._upd_obj = obj
+        return obj or None
+
+    def _upd_say(self, text, tone="muted"):
+        try:
+            self._upd_status.configure(text=text, text_color=PALETTE.get(tone, PALETTE["muted"]))
+        except Exception:
+            pass
+
+    def _check_updates(self, manual=True):
+        up = self._updater()
+        if up is None or not up.configured():
+            self._upd_say("Update checks are not available on this build.")
+            return
+        if getattr(self, "_upd_busy", False):
+            return
+        self._upd_busy = True
+        try:
+            self._upd_btn.configure(state="disabled", text="  Checking...")
+        except Exception:
+            pass
+        self._upd_say("Checking for updates...")
+        threading.Thread(target=self._upd_check_worker, args=(up, manual), daemon=True).start()
+
+    def _upd_check_worker(self, up, manual):
+        try:
+            found, info, msg = up.check()
+        except Exception as exc:
+            found, info, msg = False, None, "Update check failed: %s" % exc
+        self.after(0, lambda: self._upd_apply_check(found, info, msg, manual))
+
+    def _upd_apply_check(self, found, info, msg, manual):
+        self._upd_busy = False
+        try:
+            self._upd_btn.configure(state="normal", text="  Check for updates")
+        except Exception:
+            pass
+        self._upd_found = info if found else None
+        if found and info:
+            note = [ln for ln in (info.notes or "").strip().splitlines() if ln.strip()]
+            head = note[0][:90] if note else ""
+            self._upd_say(msg + (("  " + head) if head else ""), "primary")
+            try:
+                self._upd_install.configure(text="  Update to %s and restart" % info.version)
+                self._upd_install.grid()
+            except Exception:
+                pass
+        else:
+            try:
+                self._upd_install.grid_remove()
+            except Exception:
+                pass
+            if manual or "up to date" not in msg.lower():
+                self._upd_say(msg)
+
+    def _do_install_update(self):
+        from tkinter import messagebox
+
+        info = getattr(self, "_upd_found", None)
+        up = self._updater()
+        if not (info and up):
+            return
+        if not messagebox.askyesno(
+                "Update to %s" % info.version,
+                "Download version %s and install it now?\n\nThe app will close, update "
+                "itself and reopen. Your settings are kept." % info.version):
+            return
+        if getattr(self, "_upd_busy", False):
+            return
+        self._upd_busy = True
+        try:
+            self._upd_install.configure(state="disabled")
+            self._upd_btn.configure(state="disabled")
+            self._upd_bar.set(0)
+            self._upd_bar.grid()
+        except Exception:
+            pass
+        self._upd_say("Downloading version %s..." % info.version)
+        threading.Thread(target=self._upd_download_worker, args=(up, info), daemon=True).start()
+
+    def _upd_download_worker(self, up, info):
+        def progress(frac):
+            self.after(0, lambda: self._upd_progress(frac))
+
+        try:
+            ok, result = up.download(info, progress=progress)
+        except Exception as exc:
+            ok, result = False, "Download failed: %s" % exc
+        self.after(0, lambda: self._upd_downloaded(up, ok, result))
+
+    def _upd_progress(self, frac):
+        try:
+            self._upd_bar.set(max(0.0, min(1.0, float(frac))))
+            self._upd_say("Downloading... %d%%" % int(frac * 100))
+        except Exception:
+            pass
+
+    def _upd_downloaded(self, up, ok, result):
+        self._upd_busy = False
+        try:
+            self._upd_install.configure(state="normal")
+            self._upd_btn.configure(state="normal")
+        except Exception:
+            pass
+        if not ok:
+            try:
+                self._upd_bar.grid_remove()
+            except Exception:
+                pass
+            self._upd_say(str(result), "stop")
+            return
+        self._upd_say("Installing - the app will close and reopen...", "primary")
+        started, msg = up.install(result)
+        if not started:
+            self._upd_say(msg, "stop")
+            return
+        self.after(400, self._upd_quit)
+
+    def _upd_quit(self):
+        try:
+            self._preview_on = False
+            self._stop_tray()
+        except Exception:
+            pass
+        try:
+            self.relay.shutdown()
+        except Exception:
+            pass
+        try:
+            self.destroy()
+        except Exception:
+            pass
+        os._exit(0)
 
     def _on_theme(self, _value=None):
         mode = (self._theme_var.get() or "Light").lower()

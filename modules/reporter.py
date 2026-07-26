@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import platform
 import re
 import threading
@@ -81,7 +82,7 @@ class Reporter:
         if len(message) < 5:
             return False, "Please add a bit more detail before sending."
         if not self.configured():
-            return False, "Bug reporting isn't configured on this build."
+            return self._save_locally(message, contact)
         now = time.time()
         with self._lock:
             if self.user_cooldown > 0 and now - self._last_user < self.user_cooldown:
@@ -100,6 +101,29 @@ class Reporter:
         content = self._format("\U0001F41E Bug report", message[: self.max_len], extra)
         self._send_async(content)
         return True, "Thanks! Your report was sent to the developer."
+
+    def _save_locally(self, message: str, contact: str = "") -> tuple[bool, str]:
+        try:
+            from modules import app_paths
+
+            folder = os.path.join(app_paths.user_data_dir(), "bug_reports")
+            os.makedirs(folder, exist_ok=True)
+            name = "bug-" + time.strftime("%Y%m%d-%H%M%S") + ".txt"
+            path = os.path.join(folder, name)
+            body = [
+                "911 Dispatch Relay %s bug report" % (self.app_version or "?"),
+                "When: " + time.strftime("%Y-%m-%d %H:%M:%S"),
+                "System: %s %s" % (platform.system(), platform.release()),
+                "Contact: " + (_sanitize(contact)[:80] or "(none given)"),
+                "",
+                _redact(message),
+            ]
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(body))
+        except Exception as exc:
+            return False, "Direct sending is off and the report could not be saved: %s" % exc
+        return True, ("Direct sending is not available on this build, so the report was saved "
+                      "to %s - send it to the dev on Discord." % path)
 
     def report_error(self, text: str) -> None:
         if not (self.report_errors and self.configured()):

@@ -4,7 +4,7 @@
 ; Download Inno Setup: https://jrsoftware.org/isdl.php
 
 #define AppName "911 Dispatch Relay"
-#define AppVersion "1.4.1"
+#define AppVersion "1.5.0"
 #define AppPublisher "911 Dispatch Relay"
 #define AppExeName "911 Dispatch Relay.exe"
 
@@ -25,6 +25,9 @@ WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
 DisableProgramGroupPage=yes
+; Let a silent in-app update replace files while the app closes.
+CloseApplications=yes
+RestartApplications=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

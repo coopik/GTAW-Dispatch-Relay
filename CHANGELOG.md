@@ -6,29 +6,77 @@
 > only be misleading, so they have been removed entirely. 1.4.0 is the first release of the
 > rebuilt app.
 
+## [1.5.0] - 2026-07-27
+
+### Added
+- **Updating from inside the app.** About now shows the version you are running, checks for a newer
+  release, and when one exists shows an "Update to x.y.z and restart" button. It downloads the
+  installer with a progress bar, installs it silently, and the app reopens on its own. Your settings
+  in `%APPDATA%` are kept.
+- The check also runs quietly a couple of seconds after the app opens. It stays silent when you are
+  already up to date and only speaks up when there is something to install.
+- Two kinds of update source are understood. A GitHub releases API URL works directly and the
+  Setup .exe attached to the release is what gets installed. Any other URL should return JSON with
+  `version`, `url`, `notes` and optionally `sha256`.
+- If a `sha256` is published the download is verified against it and discarded if it does not match.
+  Only a `.exe` installer is ever accepted or run.
+- New `updates` section in `config.yaml`: `enabled`, `check_on_start`, `manifest_url`,
+  `allow_prerelease` and `timeout`.
+
+### Changed
+- The installer now closes a running copy of the app before replacing its files, which is what lets
+  the in-app update work without asking you anything.
+- Run from source rather than installed, the update button downloads the installer and tells you
+  where it is instead of trying to replace files that are not there.
+
+## [1.4.3] - 2026-07-27
+
+### Changed
+- **Dispatch never uses ten-codes.** The LAPD does not use them, so the dispatcher says "roger",
+  "copy", "clear and available", "arrived", "stand by" and "disregard" instead of 10-4, 10-8,
+  10-97 and the rest. The rule is now stated in the AI prompts (including both MDC prompts), and
+  anything on its way to the voice is checked as well, so a ten-code cannot be spoken even if the
+  AI writes one.
+- Response codes (Code 3, Code 6, Code 4, Code 7) and bare penal-code numbers such as 211 or 415
+  are correct LAPD usage and are untouched. House numbers and incident numbers are safe too:
+  "104 Elgin Avenue" and "incident 26-448120" are left exactly as they are.
+- Ten-code phrases a player says on the radio are still recognised as input, including "code ten"
+  and "10-28" for MDC lookups. Only what dispatch speaks changed.
+
+## [1.4.2] - 2026-07-27
+
+Fixes for the first installed (Setup.exe) build.
+
+### Fixed
+- **Settings kept in `%APPDATA%` are now repaired on startup.** An installed build keeps your
+  settings in `%APPDATA%\911 Dispatch Relay\config.yaml` so upgrades never overwrite them, but
+  that also meant any setting the file did not contain silently fell back to a built-in default.
+  Missing keys are now refilled from the settings shipped with the app and the repaired file is
+  written back. Values you actually chose are left alone.
+  This single cause produced both problems reported on a fresh install: the chat log dropping to
+  polling mode, and bug reporting claiming it was not configured.
+- **Bug reporting no longer dead-ends.** If direct sending is unavailable, the report is written to
+  `%APPDATA%\911 Dispatch Relay\bug_reports` and the app names the exact file to send, instead of
+  only saying it isn't configured. Reports are still stripped of keys and secrets first.
+- The polling-mode message now names the setting responsible, and a missing or blank value for that
+  setting counts as ON, which is the intended default.
+
 ## [1.4.1] - 2026-07-27
 
 ### Fixed
-- **The Enable MDC button never appeared.** The MDC section was still marked as disabled in the
+- **The Enable MDC button never appeared.** The MDC section was still flagged as disabled in the
   settings schema, so the whole section was replaced by a "Temporarily disabled in this release"
   notice before any of its controls were drawn. The notice and the disabled mechanism are gone.
-- **Shots fired now gets a proper call-out.** A broadcast such as "2W64, shots fired, shots
-  fired!" is announced LAPD style - "All units, all units. Shots fired, shots fired. Two William
-  sixty-four at Forum Drive. All units in the vicinity, respond Code 3..." - and is spoken over
-  TTS with the alert tone, because it counts as priority traffic.
-- Locations given without "at" or "on" are picked up for radio traffic too, so "shots fired,
-  Forum Drive" no longer says "refer to CAD". When no location is given at all, the call-out
-  says "refer to CAD for location".
+- **Shots fired now gets a proper call-out.** "2W64, shots fired, shots fired!" is announced LAPD
+  style - "All units, all units. Shots fired, shots fired. Two William sixty-four at Forum Drive.
+  All units in the vicinity, respond Code 3..." - and is spoken, because it counts as priority.
+- Locations given without "at" or "on" are recognised in radio traffic, so "shots fired, Forum
+  Drive" no longer says "refer to CAD". With no location at all it says "refer to CAD for location".
 - Punctuation from the game no longer leaks into speech ("at Elgin Avenue!").
-- Very short urgent traffic such as "2W64, 11-99, 11-99!" was being thrown away by the noise
-  filter for being mostly digits. Urgent traffic now bypasses that filter.
+- Short urgent traffic such as "2W64, 11-99, 11-99!" was discarded by the noise filter for being
+  mostly digits. Urgent traffic now bypasses that filter.
 
 ### Changed
-- Bug reporting: a report can be saved to a file, copied to the clipboard, or the folder opened,
-  in addition to sending it to the developer. Reports include the version, OS, whether it is an
-  installed build, the resolved chat log path, the voice provider and the recent log.
-- Bug reports are written to `%APPDATA%\911 Dispatch Relay\bug_reports`, so they keep working
-  when the app is installed to Program Files, where the install folder is read-only.
 - Refreshed the interface colours: deeper page contrast, softer surfaces and an indigo accent in
   both light and dark themes.
 
