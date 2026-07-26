@@ -1,12 +1,3 @@
-# ---------------------------------------------------------------------------
-# Chat log input
-# ---------------------------------------------------------------------------
-# The app reads the chat log your own RAGE MP client writes to disk. That file
-# is the client's local storage file, named ".storage", and it lives at:
-#   <RAGEMP install>\client_resources\<32-char hash of the server address>\.storage
-# e.g. C:\RAGEMP\client_resources\cb242ee11d52ccd84309050503ab5242\.storage
-# It is JSON; the game chat lives in its "chat_log" key. The app only ever
-# READS this file - it never writes to it, and never touches game memory.
 input_source:
   path: ''                 # full path to the .storage file. Leave blank to auto-detect.
   auto_detect: true        # search your RAGE MP install for the GTA World .storage file. A path above always wins.
@@ -68,7 +59,7 @@ llm:
   api_key: ''             # optional; leave blank to use the built-in offline LAPD generator
   timeout: 20
   emergency_only: true    # never run TTS on non-emergency / landline calls
-  verify_flags: false     # opt-in: ask the AI to confirm borderline flags (911 calls / chat / radio) are real before dispatch; needs api_key; fails open on error
+  verify_flags: false     # opt-in: ask the AI to confirm borderline flags (911 calls / chat / radio) are real before dispatch; needs _key; fails open on error
   system_prompt: >-
     You are a veteran LAPD Radio Telephone Operator (RTO / dispatcher) working a
     GTA World roleplay server that uses the San Andreas Penal Code. Convert the
@@ -123,8 +114,8 @@ tts:
     rate: 175
     voice_contains: zira
   elevenlabs:
-    api_key: 759c2bab7710a0e017d0f733e00f4050656644af0cd54588373afcfdfae3c5f1
-    voice_id: pYduSEMlSc5NZ5UXU4aO
+    api_key: ''
+    voice_id: ''
     model_id: eleven_turbo_v2
     stability: 0.5
     similarity_boost: 0.75
