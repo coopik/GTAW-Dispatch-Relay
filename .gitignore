@@ -1,0 +1,6 @@
+.buildenv/
+dist/
+build/
+installer_output/
+__pycache__/
+*.pyc

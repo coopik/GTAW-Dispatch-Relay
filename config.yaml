@@ -1,0 +1,215 @@
+input_source:
+  path: C:/Users/demev/Downloads/911 Dispatch Relay/sim_client_resources/.storage
+  auto_detect: true
+  server_fingerprint: GTA World
+  use_watchdog: true
+  poll_interval: 0.75
+  debounce_ms: 250
+  retry_attempts: 5
+  retry_delay: 0.15
+  replay_last: 0
+  encoding: utf-8
+flagging:
+  patterns:
+  - \b911\b
+  - \*dials 911\*
+  - \[EMS\]
+  - \[PD\]
+  ignore_patterns:
+  - you are not connected
+  - for emergencies
+  - emergencies dial
+  - non-emergenc
+  - in case of emergency
+  - 911 sign
+  - for fire, police
+  min_body_length: 6
+  fuzzy_threshold: 0.82
+  dedup_history: 400
+  dedup_cooldown_sec: 0
+  radio_traffic: true
+  require_chat_structure: true
+  call_block:
+    enabled: true
+  skip_own_names: []
+  panic_button: true
+  cad_updates:
+    enabled: true
+    scope: own
+  code_six:
+    enabled: true
+    scope: own
+    detail: detailed
+  clear_ack:
+    enabled: true
+    scope: own
+  code_seven:
+    enabled: true
+    scope: own
+llm:
+  enabled: true
+  provider: openai_compatible
+  max_tokens: 400
+  reasoning_effort: low
+  base_url: https://api.openai.com/v1
+  model: gpt-4o
+  tac_referral: true
+  api_key: ''
+  timeout: 20
+  emergency_only: true
+  verify_flags: false
+  system_prompt: 'You are a veteran LAPD Radio Telephone Operator (RTO / dispatcher)
+    working a GTA World roleplay server that uses the San Andreas Penal Code. Convert
+    the player''s in-game 911 report or MDC call card into ONE realistic LAPD radio
+    call-out, delivered in a calm, clipped, professional dispatcher cadence. Output
+    ONLY the raw spoken words - no quotation marks, no labels, no markdown, no stage
+    directions. NEVER narrate timing: do not say "just occurred", "now occurring",
+    "moments ago", or invent a time; a real RTO states the crime and location, not
+    when it was reported. NEVER read the caller''s name or phone number. Structure
+    it as: units, then crime / penal code, then location, then a brief detail, then
+    the incident, then the response code, then the closing. Open with "All units"
+    or "Control to all units". State the San Andreas Penal Code section number and
+    name when applicable (202 murder, 205 manslaughter, 206 assault, 207 assault with
+    a deadly weapon, 208 battery, 209 aggravated battery, 210 kidnapping, 211 human
+    trafficking, 214 criminal threats, 215 robbery, 216 armed robbery, 219 sexual
+    battery, 221 domestic violence, 222 caustic chemicals, 301 arson, 302 burglary,
+    304 grand theft, 305 petty theft, 306 grand theft auto, 307 grand theft firearm,
+    310 trespassing, 311 vandalism, 419 reckless driving, 430 impaired driver, 432
+    street racing, 503 prostitution, 505 stalking, 606 drug trafficking, 706 brandishing,
+    707 shots fired, 708 shooting from a vehicle). ALWAYS include the location. The
+    Call ID is the incident number: refer to it ONLY as the "incident" and say ONLY
+    its last four digits; if no incident number is given, omit it entirely. YOU decide
+    the response code from the content: Code 3 for any in-progress, violent, weapon,
+    or life-threatening call; Code 2 otherwise. Write every number as separate spoken
+    digits (911 is "nine one one"; incident 0907 is "incident nine oh seven"). ALWAYS
+    end with an LAPD closing such as "Units responding, identify." or "Any unit to
+    handle, identify." Keep each sentence tight and professional. Use ONLY details
+    present in the input; never invent suspect descriptions, names, times, or specifics.
+    LENGTH: give a full, informative broadcast of two to four sentences that narrates
+    what is happening, not just the crime name. Attribute it to the caller using phrases
+    like "reporting party states", "caller reports", or "per the RP", and summarise
+    the key facts (suspects, weapons, vehicles, injuries, descriptions) using ONLY
+    what is in the input. LOCATION: if the location field is missing or is not a real
+    place (for example "I told ya" or "unknown"), look for a street or landmark in
+    the situation and use that; if there is still none, say the caller did not provide
+    a location and to use the computer-aided dispatch, CAD, to trace it. TONE: match
+    your urgency to the risk, and on priority calls (pursuit, shots fired, officer
+    needs help) direct units to the tactical channel, for example "refer to TAC-1".
+    Vary your closing so you do not end every call the same way.'
+tts:
+  provider: edge
+  speak_digits: true
+  edge:
+    voice: en-US-AriaNeural
+    rate: +0%
+    pitch: +0Hz
+  pyttsx3:
+    rate: 175
+    voice_contains: zira
+  elevenlabs:
+    api_key: ''
+    voice_id: ''
+    model_id: eleven_turbo_v2
+    stability: 0.5
+    similarity_boost: 0.75
+  google:
+    credentials_json: ''
+    language_code: en-US
+    voice_name: en-US-Neural2-F
+    speaking_rate: 1.0
+    pitch: 0.0
+radiofx:
+  enabled: true
+  intensity: 0.6
+  bandpass_low_hz: 300
+  bandpass_high_hz: 3000
+  noise_level: 0.004
+  distortion: 0.35
+  key_click: true
+playback:
+  device: null
+  volume: 1.0
+  max_queue: 12
+alert:
+  enabled: true
+  scope: all
+  path: assets/dispatch_alert.wav
+  volume: 0.9
+  gap_ms: 150
+location:
+  callsigns: []
+hotkeys:
+  enabled: true
+  start: ''
+  stop: ''
+ui:
+  mode: gui
+  theme: dark
+  recent_limit: 20
+  open_monitor: 0
+  sidebar_collapsed: false
+  debug: false
+  minimize_to_tray: false
+reporting:
+  enabled: true
+  webhook_url: https://discord.com/api/webhooks/1527758313704521788/LeZdaObHQbFKAd1DcotqtqMqX5MnfZzBK9MZGcRs7HJcPVVVVkScUatSwGNdFaXMwfwO
+  report_system_errors: true
+  user_cooldown_sec: 60
+  error_cooldown_sec: 120
+  max_per_hour: 8
+  max_message_len: 1500
+mdc_lookup:
+  enabled: false
+  scope: own
+  cooldown_sec: 8
+  max_queue: 5
+  timeout: 15
+  response_channel: ''
+  user_agent: ''
+  standby_ack: true
+  ai_read_page: true
+  render_page: true
+  login_url: https://mdc.gta.world/
+  name_search_url: https://mdc.gta.world/record/{q}
+  plate_search_url: https://mdc.gta.world/dmv/{q}
+  login_markers:
+  - login
+  - sign in
+  - username
+  - password
+  selectors:
+    name:
+      full_name: ''
+      warrants: ''
+      warrant_item: ''
+      aliases: ''
+      vehicles: ''
+      license: ''
+    plate:
+      owner: ''
+      make: ''
+      model: ''
+      color: ''
+      year: ''
+      status: ''
+      stolen: ''
+  name_patterns:
+  - '(?:code ?ten|code ?10|10[ -]?29|name check|wants?(?: and warrants?)? check|warrant
+    check|wants? check)(?: on| for| of)? (?P<target>[a-z''.-]+(?: [a-z''.-]+){1,3})'
+  - '(?:let me get|lemme get|get me|gimme|give me|can (?:you|i)(?: get| run| pull)?|could
+    you|would you|please|run|do|need|pull up|pull|look ?up|check)(?: me| us| a| the)*
+    (?:code ?ten|code ?10|10[ -]?29|name check|wants?(?: and warrants?)? check|warrant
+    check|wants? check|check|name)(?: on| for| of)? (?P<target>[a-z''.-]+(?: [a-z''.-]+){1,3})'
+  - '(?:run|pull(?: up)?|look ?up|get|do)(?: me| us)?(?: a| the)? name(?: check)?(?:
+    on| for| of)? (?P<target>[a-z''.-]+(?: [a-z''.-]+){1,3})'
+  - '(?:run|check|pull(?: up)?) (?P<target>[a-z''.-]+(?: [a-z''.-]+){1,3}) (?:for
+    me|for wants(?: and warrants)?|for warrants|through (?:the )?(?:mdc|system|dispatch)|in
+    the (?:mdc|system))'
+  plate_patterns:
+  - '(?:look ?up|run|check|pull(?: up)?|do|can (?:you|i)(?: run| check| pull)?|could
+    you|would you|please)(?: me| a| this| that| the| us)* (?:license )?(?:plate|tag|registration|reg)(?:
+    number)?(?: of| on| for)? (?P<plate>[a-z0-9][a-z0-9 -]{1,12})'
+  - '(?:code ?28|10[ -]?28|code ?27|10[ -]?27)(?: on| for| of)? (?P<plate>[a-z0-9][a-z0-9
+    -]{1,12})'
+  - '(?:who(?:''s| is| owns)|registered owner of|ro of|owner of|dmv(?: on| for| check)?)
+    (?:the )?(?:plate |tag )?(?P<plate>[a-z0-9]{2,3}[ -]?[a-z0-9]{2,4})'

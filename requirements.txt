@@ -1,0 +1,50 @@
+# Core chat-log reader + audio pipeline
+# Watches the RAGE MP .storage file for new chat (replaces the old screen capture + OCR)
+watchdog>=3.0.0
+Pillow>=10.0.0            # app icons / tray icon
+numpy>=1.24
+scipy>=1.10
+pydub>=0.25.1
+sounddevice>=0.4.6
+soundfile>=0.12.1
+requests>=2.31
+PyYAML>=6.0
+
+# Modern GUI (clean light-theme app). Falls back to classic Tkinter if missing.
+customtkinter>=5.2.0
+
+# Python 3.13+ removed the stdlib 'audioop' module that pydub needs
+audioop-lts>=0.2.1 ; python_version >= "3.13"
+
+# Bundles an ffmpeg binary so pydub works without a manual ffmpeg install
+imageio-ffmpeg>=0.4.9
+
+# Windows-only: system-tray icon and multi-monitor window placement (win32gui / win32ui)
+pywin32>=306 ; platform_system == "Windows"
+
+# Optional: global Start/Stop hotkeys that work even while the game is focused
+keyboard>=0.13.5
+
+# Optional: minimize-to-system-tray support (falls back to taskbar if missing)
+pystray>=0.19.4
+
+# edge-tts pulls these in, but pin them so PyInstaller always bundles them
+aiohttp>=3.9
+certifi>=2023.7.22
+
+# Free default voice (no API key, no ElevenLabs bill) + offline fallback.
+#   edge-tts = natural neural voice over the internet (free, no key)
+#   pyttsx3  = fully offline Windows SAPI voice, used automatically when
+#              edge-tts is unavailable (no internet / not installed)
+edge-tts>=6.1.9
+pyttsx3>=2.90 ; platform_system == "Windows"
+
+# Optional: MDC Lookup Assistant (browser login + HTML parsing). Only needed if
+# you enable the optional MDC Lookup module. After installing, also run:
+#     py -m playwright install chromium
+# to download the browser used for the manual login (not bundled in the .exe).
+beautifulsoup4>=4.12
+playwright>=1.40
+
+# Optional extra backends (install only if you use them):
+# google-cloud-texttospeech>=2.16.0
