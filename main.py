@@ -30,7 +30,7 @@ from modules.reporter import Reporter
 from modules.mdc_lookup import MDCManager
 from modules.tts import TTSEngine
 
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.1"
 
 BUNDLE_DIR = app_paths.bundle_dir()
 DEFAULT_CONFIG_PATH = os.path.join(BUNDLE_DIR, "config.yaml")
@@ -180,7 +180,12 @@ class DispatchRelay:
     def set_log_callback(self, cb) -> None:
         self._log_cb = cb
 
-    _ERROR_HINTS = ("error", "failed", "exception", "traceback", "could not")
+    _ERROR_RE = re.compile(
+        r"\b(?:error|errors|failed|failure|exception|traceback|crashed|"
+        r"could not|cannot|unable to)\b",
+        re.I,
+    )
+    _NO_REPORT_PREFIXES = ("DISPATCH:", "FLAGGED:", "MDC: ", "CHAT:", "RADIO:")
 
     def _log(self, msg: str, report: bool = True) -> None:
         line = f"[{datetime.now():%H:%M:%S}] {msg}"
@@ -190,9 +195,8 @@ class DispatchRelay:
                 self._log_cb(line)
             except Exception:
                 pass
-        if report:
-            low = str(msg).lower()
-            if any(h in low for h in self._ERROR_HINTS):
+        if report and not str(msg).startswith(self._NO_REPORT_PREFIXES):
+            if self._ERROR_RE.search(str(msg)):
                 try:
                     self.reporter.report_error(line)
                 except Exception:

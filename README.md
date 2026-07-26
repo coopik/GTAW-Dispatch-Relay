@@ -311,19 +311,6 @@ Rules applied to call cards:
 
 ---
 
-## Updating
-
-The app updates itself. Open **About**: it shows the version you are running and checks for a newer
-one, and when an update exists an **Update and restart** button appears. It downloads the installer,
-installs it silently and reopens itself. Settings in `%APPDATA%\911 Dispatch Relay` are kept.
-
-To publish an update for other people, attach the `911DispatchRelay-Setup-x.y.z.exe` produced by
-`build.bat` to a GitHub release, and point `updates.manifest_url` in `config.yaml` at that repo's
-`releases/latest` API URL. Not using GitHub? Point it at any URL returning JSON like
-`{"version": "1.6.0", "url": "https://.../Setup.exe", "notes": "what changed", "sha256": "..."}`.
-Publishing a `sha256` is recommended: the download is checked against it and thrown away if it does
-not match.
-
 ## 11. Troubleshooting
 
 - **`No chat log file set`** - press **Detect file** on the Dashboard, or set `input_source.path` by hand (section 3).

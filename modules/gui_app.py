@@ -23,7 +23,7 @@ try:
 except Exception:
     usage = None
 
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.1"
 
 PALETTE = {
     "page": ("#f1f4f9", "#080d17"),

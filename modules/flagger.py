@@ -121,14 +121,30 @@ _CLEAR_RE = re.compile(
     r"(?:i'?m|im|we'?re|were)?\s*clear(?:ing|ed)?\b|"
     r"back\s*in\s*service\b|(?:mark|put|show)\s*(?:me|us)\s*"
     r"(?:clear|available|in\s*service)\b|"
-    r"\bavailable\b|\bin\s*service\b)",
+    r"(?:i'?m|im|we'?re|were|now|back|again)\s+available\b|"
+    r"\bavailable\s+for\s+(?:call|calls|service|assignment|detail|details)\b|"
+    r"\bin\s*service\b)",
     re.I,
 )
 _CLEAR_FROM_RE = re.compile(r"\bclear(?:ing)?\s+from\b\s*(?P<where>.*)$", re.I)
 _CLEAR_NEG_RE = re.compile(
-    r"all\s*clear|clear\s*the\b|clear\s*(?:this|that|the)\b|"
+    r"all\s*clear|clear(?:ing|ed)?\s*(?:the|this|that)\b|"
     r"clear\s*(?:copy|channel|air|frequency|traffic)\b|not\s*clear\b|"
     r"is\s*(?:it|this)\s*clear\b",
+    re.I,
+)
+_CLEAR_SELF_RE = re.compile(
+    r"(?:show\s*me\s*clear|showing\s*(?:me\s*)?clear|"
+    r"(?:i'?m|im|we'?re|were)\s*clear(?:ing|ed)?|"
+    r"(?:mark|put|show)\s*(?:me|us)\s*(?:clear|available|in\s*service)|"
+    r"back\s*in\s*service|clear(?:ing)?\s+from)",
+    re.I,
+)
+_CLEAR_ASK_RE = re.compile(
+    r"\?|\b(?:any|anyone|anybody|any\s*units?|who(?:'s|s|\s+is)|which\s*unit|"
+    r"do\s*(?:we|you)\s*have|is\s*(?:there|anyone|any)|are\s*(?:there|any|you)|"
+    r"got\s*(?:a|an|any)|need(?:s|ing)?\s*(?:a|an|any|another)|request(?:s|ing)?|"
+    r"looking\s*for|can\s*(?:i|we|you)|could\s*(?:i|we|you)|available\s*unit)\b",
     re.I,
 )
 _CODE_SEVEN_LOC_RE = re.compile(
@@ -627,6 +643,10 @@ class Flagger:
         if _CODE_SIX_RE.search(body) or _CODE_SEVEN_RE.search(body):
             return None
         if _CLEAR_NEG_RE.search(body):
+            return None
+        # Only an explicit self-report survives a question or a request for
+        # another unit: "any available canine?" is asking, not clearing.
+        if not _CLEAR_SELF_RE.search(body) and _CLEAR_ASK_RE.search(body):
             return None
         start_of_watch = False
         station = None

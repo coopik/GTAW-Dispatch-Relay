@@ -6,6 +6,24 @@
 > only be misleading, so they have been removed entirely. 1.4.0 is the first release of the
 > rebuilt app.
 
+## [1.5.1] - 2026-07-27
+
+### Fixed
+- **Asking about another unit no longer counts as clearing.** "25T20, any available canine?" was
+  acknowledged as "clear and available for calls", because the word "available" anywhere in a line
+  was enough to mean going available. A question mark, or a request aimed at another unit ("any",
+  "anyone", "any units", "do we have", "is there", "requesting", "looking for", "can I get",
+  "which unit"), now rules a clear out unless the unit explicitly reports itself clear ("show me
+  clear", "I'm clear", "clear from the station", "mark us in service").
+- "available" on its own is no longer treated as clearing at all. It has to be a self-report -
+  "I'm available", "back available", "available for calls" - or paired with show/mark/put.
+- "clearing the area" and "clearing that intersection" are no longer read as going available. Only
+  "clear the..." was excluded before, so the "-ing" form slipped through.
+- **Ordinary dispatch lines stopped being posted to the bug webhook as errors.** The error detector
+  matched plain substrings, and the street name "Exceptionalist" contains "exception", so normal
+  DISPATCH and FLAGGED lines were sent as auto-detected errors. Detection is whole-word now, and
+  spoken dispatch, flag and MDC output lines are never treated as errors.
+
 ## [1.5.0] - 2026-07-27
 
 ### Added
