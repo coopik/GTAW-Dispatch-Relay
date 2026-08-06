@@ -9,6 +9,65 @@ from modules import app_paths
 SESSION_FILENAME = "mdc_session.bin"
 PROFILE_DIRNAME = "mdc_browser_profile"
 
+BROWSERS_DIRNAME = "playwright_browsers"
+
+
+def browsers_dir() -> str:
+    d = os.path.join(app_paths.user_data_dir(), BROWSERS_DIRNAME)
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return d
+
+
+def prepare_browser_env() -> None:
+    os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", browsers_dir())
+
+
+def browser_channels() -> list:
+    return ["msedge", "chrome", None]
+
+
+def browser_help(err=None) -> str:
+    detail = ""
+    if err:
+        first = str(err).strip().splitlines()
+        if first:
+            detail = " (" + first[0][:160] + ")"
+    return (
+        "No usable browser engine was found" + detail + ". The MDC window uses "
+        "Microsoft Edge or Google Chrome when either one is installed - Edge ships "
+        "with Windows, so installing or repairing Edge normally fixes this. If you "
+        "run the app from source you can download the built-in engine instead with:  "
+        "py -m playwright install chromium"
+    )
+
+
+def launch_persistent(p, profile: str, headless: bool, log=None):
+    prepare_browser_env()
+    args = ["--disable-blink-features=AutomationControlled"]
+    last = None
+    for channel in browser_channels():
+        try:
+            if channel:
+                ctx = p.chromium.launch_persistent_context(
+                    profile, headless=headless, channel=channel, args=args
+                )
+            else:
+                ctx = p.chromium.launch_persistent_context(
+                    profile, headless=headless, args=args
+                )
+            if log:
+                try:
+                    log("MDC: browser engine = " + (channel or "bundled Chromium"))
+                except Exception:
+                    pass
+            return ctx
+        except Exception as e:
+            last = e
+    raise RuntimeError(browser_help(last))
+
 
 def session_path() -> str:
     return os.path.join(app_paths.user_data_dir(), SESSION_FILENAME)
@@ -171,11 +230,7 @@ def login_interactive(cfg: dict, log=None) -> tuple[bool, str]:
     cookies: list[dict] = []
     try:
         with sync_playwright() as p:
-            context = p.chromium.launch_persistent_context(
-                pdir,
-                headless=False,
-                args=["--disable-blink-features=AutomationControlled"],
-            )
+            context = launch_persistent(p, pdir, False, log)
             page = context.pages[0] if context.pages else context.new_page()
             try:
                 page.goto(login_url, wait_until="domcontentloaded", timeout=60000)
@@ -194,7 +249,11 @@ def login_interactive(cfg: dict, log=None) -> tuple[bool, str]:
             except Exception:
                 pass
     except Exception as e:
-        return False, f"Browser login failed: {e}"
+        msg = str(e)
+        if ("Executable doesn" in msg or "playwright install" in msg
+                or "BrowserType.launch" in msg):
+            return False, browser_help(e)
+        return False, f"Browser login failed: {msg}"
 
     if not cookies:
         return False, "No session cookies were captured. Please try logging in again."

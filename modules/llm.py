@@ -831,6 +831,20 @@ class LLMProcessor:
             return build_clear_ack(flag.get("callsign"))
         if isinstance(flag, dict) and flag.get("type") == "code7":
             return build_code_seven_ack(flag.get("callsign"), flag.get("location"))
+        if isinstance(flag, dict) and flag.get("type") == "opg":
+            return build_opg_ack(
+                flag.get("callsign"), flag.get("equipment"), flag.get("location")
+            )
+        if isinstance(flag, dict) and flag.get("type") == "eow":
+            return build_watch_end_ack(flag.get("callsign"))
+        if isinstance(flag, dict) and flag.get("type") == "out_status":
+            return build_out_status_ack(
+                flag.get("callsign"), flag.get("mode"), flag.get("location")
+            )
+        if isinstance(flag, dict) and flag.get("type") == "alarm":
+            return build_alarm_dispatch(
+                flag.get("alarm"), flag.get("location"), flag.get("callsign")
+            )
         if isinstance(flag, dict) and flag.get("type") == "radio":
             body = flag.get("body", "")
             offline = build_radio_dispatch(body, flag.get("callsign"))
@@ -1225,10 +1239,29 @@ _NO_TEN_CODES_RULE = (
 )
 
 _TEN_CODE_PLAIN = {
-    "4": "roger", "6": "busy", "7": "out of service", "8": "clear and available",
-    "9": "say again", "10": "records check", "15": "in custody", "20": "location",
-    "22": "disregard", "23": "stand by", "28": "records check", "29": "records check",
-    "97": "arrived", "98": "assignment complete",
+    "1": "receiving poorly", "2": "receiving well", "3": "stop transmitting",
+    "4": "roger", "5": "relay", "6": "busy", "7": "out of service",
+    "8": "clear and available", "9": "say again", "10": "records check",
+    "11": "on a traffic stop", "12": "stand by", "13": "advise road conditions",
+    "14": "providing an escort", "15": "in custody", "16": "picking up property",
+    "17": "en route", "18": "urgent", "19": "returning to the station",
+    "20": "location", "21": "call by phone", "22": "disregard",
+    "23": "stand by", "24": "assignment complete", "25": "meet",
+    "26": "detaining the subject", "27": "records check", "28": "records check",
+    "29": "records check", "31": "in progress", "32": "requesting backup",
+    "33": "emergency traffic only", "35": "major alert", "37": "suspicious vehicle",
+    "38": "stopping a suspicious vehicle", "39": "respond Code 3",
+    "40": "respond without lights or siren", "41": "beginning tour of duty",
+    "42": "end of watch", "43": "information", "45": "deceased",
+    "50": "traffic collision", "51": "requesting a tow truck",
+    "52": "requesting an ambulance", "53": "road blocked", "55": "impaired driver",
+    "56": "intoxicated pedestrian", "57": "hit and run", "60": "units in the vicinity",
+    "61": "personnel in the area", "66": "disregard", "69": "message received",
+    "70": "fire alarm", "71": "advise nature of fire", "76": "en route",
+    "77": "estimated time of arrival", "78": "requesting backup",
+    "80": "pursuit in progress", "86": "no", "87": "pick up",
+    "90": "bank alarm", "97": "arrived", "98": "assignment complete",
+    "99": "wanted, use caution",
 }
 
 _TEN_CODE_SPELLED = {
@@ -1237,11 +1270,44 @@ _TEN_CODE_SPELLED = {
     "twenty": "location", "ninetyseven": "arrived",
 }
 
+_NUM_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+    "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16,
+    "seventeen": 17, "eighteen": 18, "nineteen": 19,
+}
+
+_TENS_WORDS = {
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+    "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+}
+
+
+def _spoken_number(text):
+    key = re.sub(r"[\s\-]+", "", str(text or "")).lower()
+    if key in _NUM_WORDS:
+        return _NUM_WORDS[key]
+    for word, base in _TENS_WORDS.items():
+        if key == word:
+            return base
+        if key.startswith(word):
+            rest = key[len(word):]
+            if rest in _NUM_WORDS and _NUM_WORDS[rest] < 10:
+                return base + _NUM_WORDS[rest]
+    return None
+
+
 # A separator is required so that house numbers such as "104 Elgin" are not read
-# as the ten-code 10-4.
+# as the ten-code 10-4. "Code 10" and "code ten" are LAPD usage for a records
+# check and are deliberately left alone - only 10-<number> is a ten-code.
 _TEN_CODE_RE = re.compile(r"\b10[\s\-\u2013](\d{1,3})\b")
 _TEN_CODE_WORD_RE = re.compile(
-    r"\bten[\s\-](four|six|seven|eight|nine|twenty|ninety[\s\-]?seven)\b",
+    r"(?<!at )\bten[\s\-]"
+    r"((?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)"
+    r"(?:[\s\-]?(?:one|two|three|four|five|six|seven|eight|nine))?|"
+    r"one|two|three|four|five|six|seven|eight|nine|eleven|twelve|thirteen|"
+    r"fourteen|fifteen|sixteen|seventeen|eighteen|nineteen)\b"
+    r"(?!\s*(?:hours|hundred|a\.?m|p\.?m))",
     re.IGNORECASE,
 )
 
@@ -1255,7 +1321,12 @@ def strip_ten_codes(text: str) -> str:
 
     def spelled(m):
         key = re.sub(r"[\s\-]", "", m.group(1)).lower()
-        return _TEN_CODE_SPELLED.get(key, "")
+        if key in _TEN_CODE_SPELLED:
+            return _TEN_CODE_SPELLED[key]
+        num = _spoken_number(key)
+        if num is not None:
+            return _TEN_CODE_PLAIN.get(str(num), "")
+        return ""
 
     out = _TEN_CODE_RE.sub(plain, text)
     out = _TEN_CODE_WORD_RE.sub(spelled, out)
@@ -1264,6 +1335,16 @@ def strip_ten_codes(text: str) -> str:
     out = re.sub(r"[ \t]{2,}", " ", out)
     out = re.sub(r"\s+([,.;:!?])", r"\1", out)
     out = re.sub(r"([,;:])\s*([,.;:])", r"\2", out)
+    # A translated code often repeats what the sentence already said, e.g.
+    # "a 10-31 in progress" -> "a in progress in progress". Tidy the echo and
+    # the article that is now dangling in front of it.
+    out = re.sub(r"\b(\w+(?:\s+\w+){0,2})\s+\1\b", r"\1", out, flags=re.I)
+    out = re.sub(
+        r"\b(?:a|an)\s+(?=(?:in|at|on|out|en route|requesting|stand by|clear|roger)\b)",
+        "",
+        out,
+        flags=re.I,
+    )
     out = re.sub(r"(^|[.!?]\s+)([a-z])", lambda m: m.group(1) + m.group(2).upper(), out)
     return out.strip(" ,;:")
 
@@ -1457,6 +1538,120 @@ def build_code_seven_ack(
     loc = _usable_location(location) or (location.strip() if location else None)
     loc_str = f" at {loc}" if loc else ""
     return random.choice(_CODE_SEVEN_ACKS).format(unit=unit, loc=loc_str)
+
+
+_LOC_ABBREV = {
+    "MRS": "Mission Row Station",
+    "MRPD": "Mission Row Station",
+    "PAB": "the Police Administration Building",
+    "PHMC": "Pillbox Hill Medical Center",
+    "SAMD": "San Andreas Medical Center",
+    "DOC": "the Department of Corrections",
+    "OPG": "the Official Police Garage",
+}
+
+
+def expand_location_abbrev(text):
+    if not text:
+        return text
+    out = str(text)
+    for abbr, full in _LOC_ABBREV.items():
+        out = re.sub(r"\b" + abbr + r"\b", full, out)
+    return out
+
+
+def _spoken_location(location):
+    loc = _usable_location(location)
+    if not loc:
+        loc = location.strip() if location else None
+    return expand_location_abbrev(loc)
+
+
+_OPG_ACKS_LOC = [
+    "{unit}, copy, {what} en route to {loc}.",
+    "Copy {unit}, {what} notified, rolling to {loc}.",
+    "{unit}, roger, {what} is on the way to {loc}.",
+    "{unit}, copy your request, {what} en route to {loc}.",
+]
+
+_OPG_ACKS_NOLOC = [
+    "{unit}, copy, {what} is on the way to your location.",
+    "Copy {unit}, {what} notified, they're rolling to you.",
+    "{unit}, roger, {what} en route, refer to CAD for your location.",
+]
+
+
+def build_opg_ack(
+    callsign: str | None = None,
+    equipment: str | None = None,
+    location: str | None = None,
+) -> str:
+    unit = phonetic_callsign(callsign) if callsign else "Unit"
+    what = "an O.P.G. " + equipment if equipment else "the Official Police Garage"
+    loc = _spoken_location(location)
+    pool = _OPG_ACKS_LOC if loc else _OPG_ACKS_NOLOC
+    return random.choice(pool).format(unit=unit, what=what, loc=loc or "")
+
+
+_WATCH_END_ACKS = [
+    "{unit}, copy your end of watch, showing you out of service. Have a good night.",
+    "Copy {unit}, end of watch, showing you off duty. Get home safe.",
+    "{unit}, roger, end of watch acknowledged, you're showing out of service.",
+    "{unit}, copy, end of watch, showing you off duty. Be safe.",
+    "Copy {unit}, showing you end of watch and out of service.",
+]
+
+
+def build_watch_end_ack(callsign: str | None = None) -> str:
+    unit = phonetic_callsign(callsign) if callsign else "Unit"
+    return random.choice(_WATCH_END_ACKS).format(unit=unit)
+
+
+_OUT_TO_ACKS = [
+    "{unit}, copy, showing you out to {loc}, unavailable.",
+    "Copy {unit}, out to {loc}, you're showing unavailable.",
+    "{unit}, roger, en route to {loc}, showing you out of service.",
+    "{unit}, copy, out to {loc}, advise when you're clear.",
+]
+
+_OUT_AT_ACKS = [
+    "{unit}, copy, showing you out at {loc}, unavailable.",
+    "Copy {unit}, out at {loc}, you're showing unavailable.",
+    "{unit}, roger, out at {loc}, showing you out of service.",
+    "{unit}, copy, out at {loc}, advise when you're back in service.",
+]
+
+
+def build_out_status_ack(
+    callsign: str | None = None,
+    mode: str | None = "to",
+    location: str | None = None,
+) -> str:
+    unit = phonetic_callsign(callsign) if callsign else "Unit"
+    loc = _spoken_location(location) or "your location"
+    pool = _OUT_AT_ACKS if str(mode or "to").lower() == "at" else _OUT_TO_ACKS
+    return random.choice(pool).format(unit=unit, loc=loc)
+
+
+_ALARM_CALLS = [
+    "All units, {kind} alarm activation at {loc}. Any available unit to respond, Code 2.",
+    "Attention all units, {kind} alarm at {loc}, any unit available to handle.",
+    "All units be advised, {kind} alarm activation at {loc}, respond Code 2 and advise.",
+]
+
+
+def build_alarm_dispatch(
+    kind: str | None = None,
+    location: str | None = None,
+    callsign: str | None = None,
+) -> str:
+    k = (kind or "property").strip().lower()
+    loc = _spoken_location(location)
+    if not loc:
+        return (
+            "All units, " + k + " alarm activation, location unconfirmed, refer to CAD."
+        )
+    return random.choice(_ALARM_CALLS).format(kind=k, loc=loc)
 
 
 def unit_area_line(units: str, high_risk: bool) -> str:

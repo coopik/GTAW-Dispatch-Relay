@@ -30,7 +30,7 @@ from modules.reporter import Reporter
 from modules.mdc_lookup import MDCManager
 from modules.tts import TTSEngine
 
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.5.2"
 
 BUNDLE_DIR = app_paths.bundle_dir()
 DEFAULT_CONFIG_PATH = os.path.join(BUNDLE_DIR, "config.yaml")
@@ -56,7 +56,7 @@ def _read_yaml(path: str) -> dict:
         return {}
 
 
-def load_config(path: str = CONFIG_PATH) -> dict:
+def _load_config_raw(path: str = CONFIG_PATH) -> dict:
     defaults = {}
     if os.path.abspath(DEFAULT_CONFIG_PATH) != os.path.abspath(path):
         defaults = _read_yaml(DEFAULT_CONFIG_PATH)
@@ -76,6 +76,30 @@ def load_config(path: str = CONFIG_PATH) -> dict:
         except Exception:
             pass
     return merged
+
+
+def apply_config_defaults(cfg: dict) -> dict:
+    cfg = cfg or {}
+    try:
+        from modules.flagger import (
+            DEFAULT_MDC_NAME_PATTERNS,
+            DEFAULT_MDC_PLATE_PATTERNS,
+        )
+    except Exception:
+        return cfg
+    mdc = cfg.get("mdc_lookup")
+    if not isinstance(mdc, dict):
+        mdc = {}
+        cfg["mdc_lookup"] = mdc
+    if not mdc.get("name_patterns"):
+        mdc["name_patterns"] = list(DEFAULT_MDC_NAME_PATTERNS)
+    if not mdc.get("plate_patterns"):
+        mdc["plate_patterns"] = list(DEFAULT_MDC_PLATE_PATTERNS)
+    return cfg
+
+
+def load_config(path: str = CONFIG_PATH) -> dict:
+    return apply_config_defaults(_load_config_raw(path))
 
 
 def save_config(cfg: dict, path: str = CONFIG_PATH) -> None:
@@ -414,6 +438,23 @@ class DispatchRelay:
         if flag.get("type") == "clear":
             cs = flag.get("callsign") or "unit"
             return f"[CLEAR] {cs}"
+        if flag.get("type") == "opg":
+            cs = flag.get("callsign") or "unit"
+            eq = flag.get("equipment") or "unit"
+            loc = flag.get("location")
+            return f"[OPG] {cs}: {eq}" + (f" @ {loc}" if loc else "")
+        if flag.get("type") == "eow":
+            cs = flag.get("callsign") or "unit"
+            return f"[EOW] {cs}"
+        if flag.get("type") == "out_status":
+            cs = flag.get("callsign") or "unit"
+            mode = str(flag.get("mode") or "to").upper()
+            loc = flag.get("location") or "unknown"
+            return f"[OUT {mode}] {cs} @ {loc}"
+        if flag.get("type") == "alarm":
+            kind = flag.get("alarm") or "property"
+            loc = flag.get("location") or "unknown"
+            return f"[ALARM] {kind} @ {loc}"
         if flag.get("type") == "mdc":
             cs = flag.get("callsign") or "unit"
             return f"[MDC {flag.get('lookup', '?')}] {cs}: {flag.get('target', '')}"

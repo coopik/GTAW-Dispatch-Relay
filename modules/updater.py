@@ -47,12 +47,34 @@ class Updater:
     def __init__(self, cfg: dict, app_version: str = "", log=None):
         u = (cfg or {}).get("updates", {}) or {}
         self.enabled = bool(u.get("enabled", True))
-        self.manifest_url = str(u.get("manifest_url", "") or "").strip()
+        self.manifest_url = self.normalize_url(u.get("manifest_url", ""))
         self.check_on_start = bool(u.get("check_on_start", True))
         self.allow_prerelease = bool(u.get("allow_prerelease", False))
         self.timeout = float(u.get("timeout", 15) or 15)
         self.app_version = str(app_version or "")
         self._log = log or (lambda *_a, **_k: None)
+
+    @staticmethod
+    def normalize_url(url) -> str:
+        """Accept a release API URL, a plain GitHub repo link, or owner/repo."""
+        raw = str(url or "").strip().rstrip("/")
+        if not raw:
+            return ""
+        if "api.github.com" in raw:
+            return raw
+        m = re.match(
+            r"^(?:https?://)?(?:www\.)?github\.com/([^/\s]+)/([^/\s]+?)(?:\.git)?(?:/.*)?$",
+            raw,
+            re.I,
+        )
+        if not m:
+            m = re.match(r"^([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+?)(?:\.git)?$", raw)
+        if m:
+            return "https://api.github.com/repos/%s/%s/releases/latest" % (
+                m.group(1),
+                m.group(2),
+            )
+        return raw
 
     def configured(self) -> bool:
         return bool(self.enabled and requests is not None
@@ -87,6 +109,10 @@ class Updater:
             return False, None, "Update information could not be read: %s" % exc
         if info is None:
             return False, None, "No installer was published with the latest release."
+        if is_newer(info.version, self.app_version) and not info.url:
+            return True, info, ("Version %s is available, but that release has no "
+                                "installer attached - open the release page to get it."
+                                % info.version)
         if not is_newer(info.version, self.app_version):
             return False, info, "You are up to date."
         return True, info, "Version %s is available." % info.version
@@ -110,7 +136,9 @@ class Updater:
                         asset = a
                         break
             if asset is None:
-                return None
+                return UpdateInfo(version=version,
+                                  notes=data.get("body", ""),
+                                  page_url=data.get("html_url", ""))
             return UpdateInfo(version=version,
                               url=asset.get("browser_download_url", ""),
                               notes=data.get("body", ""),
