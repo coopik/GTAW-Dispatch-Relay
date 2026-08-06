@@ -23,7 +23,7 @@ try:
 except Exception:
     usage = None
 
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.5.2"
 
 PALETTE = {
     "page": ("#f1f4f9", "#080d17"),
@@ -187,6 +187,26 @@ SETTINGS_SCHEMA = [
         {"path": ["flagging", "clear_ack", "scope"], "label": "Clear applies to", "kind": "choice",
          "choices": ["own", "all"],
          "hint": "\"own\" answers only your own call signs; \"all\" answers any unit clearing."},
+        {"path": ["flagging", "opg", "enabled"], "label": "Acknowledge OPG (police garage) requests", "kind": "bool",
+         "hint": "Reply when a unit asks for the Official Police Garage, e.g. \"roll me OPG to Route 68\" "
+                 "or \"requesting an OPG flatbed\". Handles flatbed, tow truck and transport requests."},
+        {"path": ["flagging", "opg", "scope"], "label": "OPG requests apply to", "kind": "choice",
+         "choices": ["own", "all"],
+         "hint": "\"own\" answers only your own call signs; \"all\" answers any unit requesting OPG."},
+        {"path": ["flagging", "end_of_watch", "enabled"], "label": "Acknowledge end of watch", "kind": "bool",
+         "hint": "Reply when a unit calls end of watch / EOW / signing off, and show them off duty."},
+        {"path": ["flagging", "end_of_watch", "scope"], "label": "End of watch applies to", "kind": "choice",
+         "choices": ["own", "all"],
+         "hint": "\"own\" answers only your own call signs; \"all\" answers any unit going end of watch."},
+        {"path": ["flagging", "out_status", "enabled"], "label": "Acknowledge out to / out at", "kind": "bool",
+         "hint": "\"<call sign>, out to MRS\" = en route and unavailable; \"<call sign>, out at MRS\" = "
+                 "unavailable at that location. Station abbreviations are spoken in full."},
+        {"path": ["flagging", "out_status", "scope"], "label": "Out to / out at applies to", "kind": "choice",
+         "choices": ["own", "all"],
+         "hint": "\"own\" answers only your own call signs; \"all\" answers any unit going out to or out at."},
+        {"path": ["flagging", "alarms", "enabled"], "label": "Flag property alarms", "kind": "bool",
+         "hint": "Put out a call when a property alarm activation comes over the radio - silent, audible, "
+                 "burglary, commercial or residential."},
     ], None),
     ("MDC Lookup (optional)", "search", [
         {"kind": "action_mdc", "label": "Web MDC session"},
@@ -259,6 +279,13 @@ SETTINGS_SCHEMA = [
         {"path": ["ui", "minimize_to_tray"], "label": "Minimize to system tray (instead of taskbar)", "kind": "bool",
          "hint": "When on, clicking minimize hides the window to the system tray. Right-click the tray "
                  "icon to restore or quit. If the tray package isn't available it falls back to the taskbar."},
+        {"path": ["updates", "check_on_start"], "label": "Check for updates when the app starts", "kind": "bool",
+         "hint": "A few seconds after launch the app asks GitHub whether a newer version exists. "
+                 "If there is one, a window opens with the release notes and an update button. "
+                 "Nothing is downloaded or installed until you click it."},
+        {"path": ["updates", "enabled"], "label": "Allow update checks", "kind": "bool",
+         "hint": "Turn this off to stop the app contacting GitHub at all. The Check for updates "
+                 "button on the About page stops working too."},
     ], None),
 ]
 
@@ -1310,8 +1337,11 @@ class DispatchApp(ctk.CTk):
                      font=self.f_s, text_color=PALETTE["muted"]).grid(row=5, column=0, sticky="w",
                                                                       padx=30, pady=(0, 12))
         try:
-            if _get(self.relay.cfg, ["updates", "check_on_start"], True):
-                self.after(2500, lambda: self._check_updates(manual=False))
+            if (_get(self.relay.cfg, ["updates", "enabled"], True)
+                    and _get(self.relay.cfg, ["updates", "check_on_start"], True)
+                    and not getattr(self, "_upd_started", False)):
+                self._upd_started = True
+                self.after(2500, lambda: self._check_updates(manual=False, popup=True))
         except Exception:
             pass
         return page
@@ -1334,7 +1364,7 @@ class DispatchApp(ctk.CTk):
         except Exception:
             pass
 
-    def _check_updates(self, manual=True):
+    def _check_updates(self, manual=True, popup=False):
         up = self._updater()
         if up is None or not up.configured():
             self._upd_say("Update checks are not available on this build.")
@@ -1347,16 +1377,17 @@ class DispatchApp(ctk.CTk):
         except Exception:
             pass
         self._upd_say("Checking for updates...")
-        threading.Thread(target=self._upd_check_worker, args=(up, manual), daemon=True).start()
+        threading.Thread(target=self._upd_check_worker, args=(up, manual, popup),
+                         daemon=True).start()
 
-    def _upd_check_worker(self, up, manual):
+    def _upd_check_worker(self, up, manual, popup=False):
         try:
             found, info, msg = up.check()
         except Exception as exc:
             found, info, msg = False, None, "Update check failed: %s" % exc
-        self.after(0, lambda: self._upd_apply_check(found, info, msg, manual))
+        self.after(0, lambda: self._upd_apply_check(found, info, msg, manual, popup))
 
-    def _upd_apply_check(self, found, info, msg, manual):
+    def _upd_apply_check(self, found, info, msg, manual, popup=False):
         self._upd_busy = False
         try:
             self._upd_btn.configure(state="normal", text="  Check for updates")
@@ -1372,6 +1403,11 @@ class DispatchApp(ctk.CTk):
                 self._upd_install.grid()
             except Exception:
                 pass
+            if popup:
+                try:
+                    self._show_update_popup(info)
+                except Exception as exc:
+                    self._log_lines.append("Update window could not open: %s" % exc)
         else:
             try:
                 self._upd_install.grid_remove()
@@ -1379,6 +1415,90 @@ class DispatchApp(ctk.CTk):
                 pass
             if manual or "up to date" not in msg.lower():
                 self._upd_say(msg)
+
+    def _show_update_popup(self, info):
+        if info is None:
+            return
+        old = getattr(self, "_upd_popup", None)
+        if old is not None:
+            try:
+                if old.winfo_exists():
+                    old.lift()
+                    return
+            except Exception:
+                pass
+        win = ctk.CTkToplevel(self)
+        self._upd_popup = win
+        card = PALETTE.get("card", PALETTE["page"])
+        win.title("Update available")
+        win.geometry("580x440")
+        win.minsize(480, 360)
+        win.configure(fg_color=PALETTE["page"])
+        win.grid_columnconfigure(0, weight=1)
+        win.grid_rowconfigure(3, weight=1)
+        try:
+            win.transient(self)
+        except Exception:
+            pass
+        ctk.CTkLabel(win, text="Version %s is available" % info.version,
+                     font=self.f_title, text_color=PALETTE["text"]).grid(
+            row=0, column=0, sticky="w", padx=24, pady=(22, 2))
+        ctk.CTkLabel(win, text="You are running v%s." % APP_VERSION, font=self.f_s,
+                     text_color=PALETTE["muted"]).grid(
+            row=1, column=0, sticky="w", padx=24, pady=(0, 12))
+        ctk.CTkLabel(win, text="What's new", font=self.f_bb,
+                     text_color=PALETTE["text"]).grid(
+            row=2, column=0, sticky="w", padx=24, pady=(0, 4))
+        notes = (info.notes or "").strip() or "No release notes were published."
+        box = ctk.CTkTextbox(win, font=self.f_b, wrap="word", corner_radius=10,
+                             fg_color=card, text_color=PALETTE["text"])
+        box.grid(row=3, column=0, sticky="nsew", padx=24)
+        try:
+            box.insert("1.0", notes)
+            box.configure(state="disabled")
+        except Exception:
+            pass
+        row = ctk.CTkFrame(win, fg_color="transparent")
+        row.grid(row=4, column=0, sticky="ew", padx=24, pady=(14, 20))
+
+        def _close():
+            try:
+                win.grab_release()
+            except Exception:
+                pass
+            try:
+                win.destroy()
+            except Exception:
+                pass
+            self._upd_popup = None
+
+        def _update_now():
+            self._upd_found = info
+            _close()
+            try:
+                self._show("about")
+            except Exception:
+                pass
+            self._do_install_update()
+
+        ctk.CTkButton(row, text="  Update and restart", height=38, width=210,
+                      corner_radius=10, font=self.f_bb, fg_color=PALETTE["primary"],
+                      text_color="#ffffff", hover_color=PALETTE["primary_hover"],
+                      command=_update_now).pack(side="left")
+        ctk.CTkButton(row, text="Later", height=38, width=110, corner_radius=10,
+                      font=self.f_bb, fg_color=PALETTE["neutral"],
+                      text_color=PALETTE["text"], hover_color=PALETTE["neutral_hover"],
+                      command=_close).pack(side="left", padx=(10, 0))
+        win.protocol("WM_DELETE_WINDOW", _close)
+        # CTkToplevel needs a beat before it can take the grab, or the window
+        # opens behind the main one on Windows.
+        try:
+            win.after(220, win.lift)
+            win.after(260, win.focus_force)
+            win.after(300, win.grab_set)
+        except Exception:
+            pass
+        return win
 
     def _do_install_update(self):
         from tkinter import messagebox

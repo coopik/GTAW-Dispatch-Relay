@@ -6,6 +6,20 @@
 > only be misleading, so they have been removed entirely. 1.4.0 is the first release of the
 > rebuilt app.
 
+## v1.5.2
+
+- MDC login no longer dies on a missing browser engine. The app now uses Microsoft Edge or Google Chrome automatically when either is installed, falls back to the bundled Chromium, keeps any downloaded engine in your app-data folder, and shows a plain-English fix instead of a raw Playwright error.
+- Name and plate lookup phrases are never blank again: the built-in defaults are restored automatically whenever those boxes are empty, so code ten and plate checks work out of the box.
+- New: OPG (Official Police Garage) requests are flagged and acknowledged - "roll me OPG to Route 68", "OPG flatbed", "requesting a tow truck". Optional, with its own scope setting.
+- New: end of watch traffic is flagged and acknowledged, showing the unit off duty. Optional.
+- New: property alarm activations (silent, audible, burglary, commercial, residential, fire, hold-up) are flagged and put out as a call.
+- New: "out to <place>" (en route, unavailable) and "out at <place>" (unavailable on location) are recognised and acknowledged. Optional.
+- Station abbreviations such as MRS, PHMC and PAB are now spoken in full so the voice does not read them as words.
+- MDC replies no longer slip ten-codes past the filter. The spoken forms ("ten twenty-nine", "ten twenty-eight") were not recognised, only the digit forms were, and unknown codes were deleted mid-sentence instead of being translated. "Code ten" for a records check is correct LAPD usage and is left alone.
+- Fixed the update check: it pointed at the wrong repository name and every check quietly returned "no releases published yet". A GitHub repository link or owner/repo is now accepted as well as a full API URL.
+- New optional setting: check for updates when the app starts. If a newer version is found, a window opens with the release notes and an update button that installs it and restarts the app.
+- Removed the OCR-era ignore patterns ("you are not connected", "for emergencies", "911 sign" and friends). They existed to filter game signage read off the screen, which cannot happen now the app reads the chat log.
+
 ## [1.5.1] - 2026-07-27
 
 ### Fixed

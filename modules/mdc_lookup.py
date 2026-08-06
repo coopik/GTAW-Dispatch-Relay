@@ -259,7 +259,7 @@ class MDCManager:
             profile = mdc_auth.profile_dir()
             ms = int(max(5, self.timeout) * 1000)
             with sync_playwright() as p:
-                context = p.chromium.launch_persistent_context(profile, headless=True)
+                context = mdc_auth.launch_persistent(p, profile, True)
                 try:
                     page = context.pages[0] if context.pages else context.new_page()
                     page.set_default_timeout(ms)

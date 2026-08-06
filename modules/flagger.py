@@ -152,6 +152,50 @@ _CODE_SEVEN_LOC_RE = re.compile(
     re.I,
 )
 
+DEFAULT_MDC_NAME_PATTERNS = [
+    r"(?:code ?ten|code ?10|wants?(?: and warrants?)? check|warrant check|wants? check|name check)(?: on| for| of)? (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3})",
+    r"(?:let me get|lemme get|get me|gimme|give me|can (?:you|i)(?: get| run| pull)?|could you|would you|please|run|do|need|pull up|pull|look ?up|check)(?: me| us| a| the)* (?:code ?ten|code ?10|wants?(?: and warrants?)? check|warrant check|wants? check|name check|check|name)(?: on| for| of)? (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3})",
+    r"(?:run|pull(?: up)?|look ?up|get|do)(?: me| us)?(?: a| the)? name(?: check)?(?: on| for| of)? (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3})",
+    r"(?:run|check|pull(?: up)?) (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3}) (?:for me|for wants(?: and warrants)?|for warrants|through (?:the )?(?:mdc|system|dispatch)|in the (?:mdc|system))",
+]
+
+DEFAULT_MDC_PLATE_PATTERNS = [
+    r"(?:look ?up|run|check|pull(?: up)?|do|can (?:you|i)(?: run| check| pull)?|could you|would you|please)(?: me| a| this| that| the| us)* (?:license )?(?:plate|tag|registration|reg)(?: number)?(?: of| on| for)? (?P<plate>[a-z0-9][a-z0-9 -]{1,12})",
+    r"(?:registration check|reg check|dmv return|dmv check)(?: on| for| of)? (?P<plate>[a-z0-9][a-z0-9 -]{1,12})",
+    r"(?:who(?:'s| is| owns)|registered owner of|ro of|owner of|dmv(?: on| for| check)?) (?:the )?(?:plate |tag )?(?P<plate>[a-z0-9]{2,3}[ -]?[a-z0-9]{2,4})",
+]
+
+_OPG_RE = re.compile(r"\bopg\b|\bo\.p\.g\.?\b|\bofficial police garage\b", re.I)
+_OPG_EQUIP_RE = re.compile(
+    r"\b(flat\s?bed|tow\s?truck|towing|tow|wrecker|rotator|transport)\b", re.I
+)
+_OPG_ASK_RE = re.compile(
+    r"\b(?:roll|send|start|dispatch|request(?:ing|ed)?|need|needs|require|get|call|"
+    r"have|can|could|would|advise)\b",
+    re.I,
+)
+_EOW_RE = re.compile(
+    r"\bend\s*of\s*(?:watch|shift|tour)\b|\be\.?\s?o\.?\s?w\.?\b|"
+    r"\bgoing\s+off\s+duty\b|\bsigning\s+off\b|\blogging\s+off\b|"
+    r"\bout\s+of\s+service\s+for\s+the\s+(?:night|day|shift)\b",
+    re.I,
+)
+_OUT_STATUS_RE = re.compile(
+    r"\bout\s+(?P<mode>to|at)\s+(?P<where>[A-Za-z0-9][A-Za-z0-9 .'/&-]*)", re.I
+)
+_ALARM_RE = re.compile(
+    r"\b(?:silent|audible|burglar(?:y)?|commercial|residential|business|property|"
+    r"fire|hold\s?-?up|robbery)\s+alarm\b|"
+    r"\balarm\s+(?:activation|call|going\s+off|tripped|sounding|drop)\b|"
+    r"\b(?:activated|tripped)\s+alarm\b",
+    re.I,
+)
+_ALARM_KIND_RE = re.compile(
+    r"\b(silent|audible|burglary|burglar|commercial|residential|business|property|"
+    r"fire|hold\s?-?up|robbery)\b",
+    re.I,
+)
+
 _CHAT_SPEAKER_RE = re.compile(
     r"[A-Za-z][\w'.\-]*(?:\s+[A-Za-z][\w'.\-]*){0,3}\s+"
     r"(?:says|shouts|whispers|exclaims|mutters|asks|yells|screams|states|"
@@ -226,11 +270,26 @@ class Flagger:
         c7_cfg = cfg.get("code_seven", {}) or {}
         self.code7_enabled = bool(c7_cfg.get("enabled", True))
         self.code7_scope = str(c7_cfg.get("scope", "own")).lower()
+        opg_cfg = cfg.get("opg", {}) or {}
+        self.opg_enabled = bool(opg_cfg.get("enabled", True))
+        self.opg_scope = str(opg_cfg.get("scope", "own")).lower()
+        eow_cfg = cfg.get("end_of_watch", {}) or {}
+        self.eow_enabled = bool(eow_cfg.get("enabled", True))
+        self.eow_scope = str(eow_cfg.get("scope", "own")).lower()
+        out_cfg = cfg.get("out_status", {}) or {}
+        self.out_status_enabled = bool(out_cfg.get("enabled", True))
+        self.out_status_scope = str(out_cfg.get("scope", "own")).lower()
+        alarm_cfg = cfg.get("alarms", {}) or {}
+        self.alarm_enabled = bool(alarm_cfg.get("enabled", True))
         mdc_cfg = cfg.get("mdc_lookup", {}) or {}
         self.mdc_enabled = bool(mdc_cfg.get("enabled", False))
         self.mdc_scope = str(mdc_cfg.get("scope", "own")).lower()
-        self.mdc_name_res = self._compile_list(mdc_cfg.get("name_patterns"), re.I)
-        self.mdc_plate_res = self._compile_list(mdc_cfg.get("plate_patterns"), re.I)
+        self.mdc_name_res = self._compile_list(
+            mdc_cfg.get("name_patterns") or DEFAULT_MDC_NAME_PATTERNS, re.I
+        )
+        self.mdc_plate_res = self._compile_list(
+            mdc_cfg.get("plate_patterns") or DEFAULT_MDC_PLATE_PATTERNS, re.I
+        )
         self.own_callsigns = [
             self._norm_callsign(c)
             for c in (cfg.get("own_callsigns") or cad_cfg.get("callsigns") or [])
@@ -698,6 +757,137 @@ class Flagger:
         return {"type": "code7", "callsign": callsign, "location": location, "raw": body}
 
     @staticmethod
+    def _trailing_location(body: str, start: int = 0) -> str | None:
+        tail = (body or "")[start:]
+        m = re.search(r"\b(?:to|at|on|near|by|@)\s+(?P<where>.+)$", tail, re.I)
+        if not m:
+            return None
+        where = m.group("where")
+        where = re.sub(r"(?i)\b(?:we'?re|i'?m|im|were|we are|i am)\b", " ", where)
+        where = re.sub(r"(?i)^the\s+", "", where.strip())
+        where = re.sub(r"\s{2,}", " ", where).strip(" .,-;:")
+        where = re.sub(r"\s+,", ",", where)
+        if len(re.sub(r"[^A-Za-z0-9]", "", where)) < 3:
+            return None
+        return where or None
+
+    def _line_callsign(self, body: str) -> str | None:
+        m = _CALLSIGN_RE.match(body)
+        callsign = m.group(1).strip() if m else None
+        if not callsign:
+            m2 = _ANY_CALLSIGN_RE.search(body)
+            callsign = m2.group(1).strip() if m2 else None
+        return callsign or None
+
+    def _parse_opg(self, line: str) -> dict | None:
+        if not self.opg_enabled:
+            return None
+        body = self._strip_speaker_meta(line)
+        if not body:
+            return None
+        m_opg = _OPG_RE.search(body)
+        if not m_opg or not _OPG_ASK_RE.search(body):
+            return None
+        callsign = self._line_callsign(body)
+        if self.opg_scope == "own" and not self._match_own_callsign(callsign or ""):
+            return None
+        equipment = None
+        eq = _OPG_EQUIP_RE.search(body)
+        if eq:
+            key = re.sub(r"[^a-z]", "", eq.group(1).lower())
+            equipment = {
+                "flatbed": "flatbed",
+                "towtruck": "tow truck",
+                "towing": "tow truck",
+                "tow": "tow truck",
+                "wrecker": "tow truck",
+                "rotator": "rotator",
+                "transport": "transport",
+            }.get(key)
+        location = self._trailing_location(body, m_opg.end())
+        if not self._is_new(body):
+            return None
+        return {
+            "type": "opg",
+            "callsign": callsign,
+            "equipment": equipment,
+            "location": location,
+            "raw": body,
+        }
+
+    def _parse_eow(self, line: str) -> dict | None:
+        if not self.eow_enabled:
+            return None
+        body = self._strip_speaker_meta(line)
+        if not body or not _EOW_RE.search(body):
+            return None
+        if "?" in body:
+            return None
+        callsign = self._line_callsign(body)
+        if self.eow_scope == "own" and not self._match_own_callsign(callsign or ""):
+            return None
+        if not self._is_new(body):
+            return None
+        return {"type": "eow", "callsign": callsign, "raw": body}
+
+    def _parse_out_status(self, line: str) -> dict | None:
+        if not self.out_status_enabled:
+            return None
+        body = self._strip_speaker_meta(line)
+        if not body:
+            return None
+        if _CODE_SIX_RE.search(body) or _CODE_SEVEN_RE.search(body):
+            return None
+        if _EOW_RE.search(body):
+            return None
+        m = _OUT_STATUS_RE.search(body)
+        if not m:
+            return None
+        mode = m.group("mode").lower()
+        where = (m.group("where") or "").strip(" .,-;:")
+        where = re.sub(r"(?i)\bfor\s+(?:the\s+)?(?:night|day|shift)\b", "", where).strip()
+        if len(re.sub(r"[^A-Za-z0-9]", "", where)) < 2:
+            return None
+        callsign = self._line_callsign(body)
+        if self.out_status_scope == "own" and not self._match_own_callsign(callsign or ""):
+            return None
+        if not self._is_new(body):
+            return None
+        return {
+            "type": "out_status",
+            "mode": mode,
+            "callsign": callsign,
+            "location": where,
+            "raw": body,
+        }
+
+    def _parse_alarm(self, line: str) -> dict | None:
+        if not self.alarm_enabled:
+            return None
+        body = self._strip_speaker_meta(line)
+        if not body:
+            return None
+        m = _ALARM_RE.search(body)
+        if not m or _PANIC_RE.search(body):
+            return None
+        kind = "property"
+        mk = _ALARM_KIND_RE.search(body)
+        if mk:
+            kind = re.sub(r"\s+", "", mk.group(1).lower()).replace("-", "")
+            kind = {"burglar": "burglary", "holdup": "hold-up"}.get(kind, kind)
+        location = self._trailing_location(body, m.end())
+        callsign = self._line_callsign(body)
+        if not self._is_new(body):
+            return None
+        return {
+            "type": "alarm",
+            "alarm": kind,
+            "callsign": callsign,
+            "location": location,
+            "raw": body,
+        }
+
+    @staticmethod
     def _compile_list(patterns, flags) -> list:
         out = []
         for p in (patterns or []):
@@ -849,9 +1039,25 @@ class Flagger:
             if code7 is not None:
                 flags.append(code7)
                 continue
+            opg = self._parse_opg(line)
+            if opg is not None:
+                flags.append(opg)
+                continue
+            eow = self._parse_eow(line)
+            if eow is not None:
+                flags.append(eow)
+                continue
             clear = self._parse_clear(line)
             if clear is not None:
                 flags.append(clear)
+                continue
+            outs = self._parse_out_status(line)
+            if outs is not None:
+                flags.append(outs)
+                continue
+            alarm = self._parse_alarm(line)
+            if alarm is not None:
+                flags.append(alarm)
                 continue
             mdc = self._parse_mdc(line)
             if mdc is not None:
