@@ -4,7 +4,7 @@
 ; Download Inno Setup: https://jrsoftware.org/isdl.php
 
 #define AppName "911 Dispatch Relay"
-#define AppVersion "1.5.2"
+#define AppVersion "1.5.3"
 #define AppPublisher "911 Dispatch Relay"
 #define AppExeName "911 Dispatch Relay.exe"
 

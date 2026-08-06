@@ -76,6 +76,15 @@ class Updater:
             )
         return raw
 
+    def repo_slug(self) -> str:
+        url = self.manifest_url or ""
+        if "/repos/" not in url:
+            return ""
+        parts = [p for p in url.split("/repos/", 1)[1].split("/") if p]
+        if len(parts) >= 2:
+            return parts[0] + "/" + parts[1]
+        return ""
+
     def configured(self) -> bool:
         return bool(self.enabled and requests is not None
                     and self.manifest_url.startswith("https://"))
@@ -98,7 +107,11 @@ class Updater:
                                 headers={"User-Agent": _UA,
                                          "Accept": "application/vnd.github+json"})
             if resp.status_code == 404:
-                return False, None, "No releases published yet."
+                return False, None, (
+                    "No releases published yet for %s. Publish a release on "
+                    "GitHub and attach the installer to it."
+                    % (self.repo_slug() or "the configured repository")
+                )
             resp.raise_for_status()
             data = resp.json()
         except Exception as exc:

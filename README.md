@@ -301,7 +301,8 @@ Rules applied to call cards:
 - **input_source.retry_attempts** / **retry_delay**: retries for when the game client has the file locked.
 - **input_source.replay_last**: re-process this many existing lines on start (`0` = only brand-new chat).
 - **location.track_area_from_radio**: learn your current area from your own radio traffic, for area call-outs.
-- **flagging.patterns**: regex list. **min_body_length**, **fuzzy_threshold** (dedup strictness), **dedup_history**. **call_block.enabled**: parse call cards.
+- **flagging.patterns**: regex list.
+- **flagging.status_dedup_sec**: seconds a repeated status call ("25T15, clear.") stays suppressed before it may be read again. Default 90. **min_body_length**, **fuzzy_threshold** (dedup strictness), **dedup_history**. **call_block.enabled**: parse call cards.
 - **llm**: `enabled`, `base_url`, `model`, `api_key`, `system_prompt` (the LAPD dispatcher persona), `verify_flags` (opt-in AI double-check of borderline flags before dispatch).
 - **tts**: `provider`, `speak_digits`, and per-provider settings (`elevenlabs`, `edge`, `google`, `pyttsx3`).
 - **radiofx**: `intensity`, `bandpass_low_hz`, `bandpass_high_hz`, `noise_level`, `distortion`, `key_click`.

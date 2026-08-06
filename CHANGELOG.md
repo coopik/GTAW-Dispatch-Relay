@@ -6,6 +6,14 @@
 > only be misleading, so they have been removed entirely. 1.4.0 is the first release of the
 > rebuilt app.
 
+## v1.5.3
+
+- Code six acknowledgements no longer read the rest of the transmission back as the location. A location stops at the end of the sentence, at the point the sentence stops describing a place, and after eight words.
+- A code six that also asks for additionals is now answered with the request put on the air instead of "Advise if you need anything".
+- Short status calls such as "25T15, clear." and "25T15, out to MRS." are no longer swallowed by the duplicate filter, or by a near-identical call from another unit. They use their own exact-match window, `flagging.status_dedup_sec`, default 90 seconds.
+- Alarm flagging ignores traffic that closes an alarm ("last property alarm gonna be code four adam, no signs of any suspect") and no longer broadcasts an alarm with no location when a unit is the one speaking.
+- The update check names the repository it looked at when no release has been published yet.
+
 ## v1.5.2
 
 - MDC login no longer dies on a missing browser engine. The app now uses Microsoft Edge or Google Chrome automatically when either is installed, falls back to the bundled Chromium, keeps any downloaded engine in your app-data folder, and shows a plain-English fix instead of a raw Playwright error.

@@ -823,7 +823,10 @@ class LLMProcessor:
             return build_cad_ack(flag.get("callsign"), flag.get("what"))
         if isinstance(flag, dict) and flag.get("type") == "code6":
             return build_code_six_ack(
-                flag.get("callsign"), flag.get("location"), flag.get("details")
+                flag.get("callsign"),
+                flag.get("location"),
+                flag.get("details"),
+                flag.get("needs"),
             )
         if isinstance(flag, dict) and flag.get("type") == "clear":
             if flag.get("start_of_watch"):
@@ -1464,12 +1467,19 @@ _CODE_SIX_CLOSERS = [
     " Advise if you need anything.",
     " Ident when you're clear.",
 ]
+_CODE_SIX_ASSIST_ACKS = [
+    "Any available unit to assist {unit}{where}, Code 2.",
+    "Additional unit requested{where}, any available unit, Code 2.",
+    "Copy the request for additional, any available unit to assist "
+    "{unit}{where}, Code 2.",
+]
 
 
 def build_code_six_ack(
     callsign: str | None = None,
     location: str | None = None,
     details: str | None = None,
+    needs: str | None = None,
 ) -> str:
     unit = phonetic_callsign(callsign) if callsign else "Unit"
     opener = random.choice(_CODE_SIX_OPENERS)
@@ -1482,6 +1492,12 @@ def build_code_six_ack(
             d = "with " + d
         if d:
             tail = f", {d}"
+    if needs:
+        where = f" at {loc}" if loc else ""
+        assist = random.choice(_CODE_SIX_ASSIST_ACKS).format(
+            unit=unit, where=where
+        )
+        return f"Copy {unit}, {opener}{loc_str}{tail}. {assist}"
     closer = random.choice(_CODE_SIX_CLOSERS)
     return f"Copy {unit}, {opener}{loc_str}{tail}.{closer}".rstrip()
 

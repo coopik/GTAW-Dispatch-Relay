@@ -1,116 +1,133 @@
+# ---------------------------------------------------------------------------
+# Chat log input
+# ---------------------------------------------------------------------------
+# The app reads the chat log your own RAGE MP client writes to disk. That file
+# is the client's local storage file, named ".storage", and it lives at:
+#   <RAGEMP install>\client_resources\<32-char hash of the server address>\.storage
+# e.g. C:\RAGEMP\client_resources\cb242ee11d52ccd84309050503ab5242\.storage
+# It is JSON; the game chat lives in its "chat_log" key. The app only ever
+# READS this file - it never writes to it, and never touches game memory.
 input_source:
-  path: ''
-  auto_detect: true
-  server_fingerprint: GTA World
-  use_watchdog: true
-  poll_interval: 0.75
-  debounce_ms: 250
-  retry_attempts: 5
-  retry_delay: 0.15
-  replay_last: 0
-  encoding: utf-8
+  path: ''                 # full path to the .storage file. Leave blank to auto-detect.
+  auto_detect: true        # search your RAGE MP install for the GTA World .storage file. A path above always wins.
+  server_fingerprint: GTA World   # only auto-pick a .storage file whose server_version matches this
+  use_watchdog: true       # react the instant the game rewrites the file. false = plain polling only (slower but bulletproof).
+  poll_interval: 0.75      # seconds between safety-net re-checks of the file
+  debounce_ms: 250         # wait this long after a change before reading, so a half-written file is never parsed
+  retry_attempts: 5        # the game holds the file open while rewriting it; retry a blocked/partial read this many times
+  retry_delay: 0.15        # seconds between those retries
+  replay_last: 0           # on start, re-process this many existing lines (0 = only brand-new chat; useful for testing)
+  encoding: utf-8          # the file is UTF-8; change only if your client writes something else
+
 flagging:
   patterns:
-  - \b911\b
-  - \*dials 911\*
-  - \[EMS\]
-  - \[PD\]
+    - "\\b911\\b"
+    - "\\*dials 911\\*"
+    - "\\[EMS\\]"
+    - "\\[PD\\]"
   min_body_length: 6
   fuzzy_threshold: 0.82
   dedup_history: 400
-  dedup_cooldown_sec: 0
-  radio_traffic: true
-  require_chat_structure: true
+  status_dedup_sec: 90      # seconds a short status call ("25T15, clear.") stays suppressed before the same wording may be read again. Status calls repeat verbatim all shift, so they use this window instead of the fuzzy duplicate filter. Lower it if you clear more often than that.
+  dedup_cooldown_sec: 0     # seconds the same wording stays "already flagged" while it is OFF screen. 0 (recommended) = never re-announce identical wording until it scrolls out of the chat history - this stops the game chat fading during a lull and then re-rendering the SAME old line from being re-flagged. Set a positive value (e.g. 600) only if you want identical wording re-announced after it has been gone that long.
+  radio_traffic: true      # also read unit-to-dispatch radio traffic (code 6, shots fired, pursuits) on the base channel
+  require_chat_structure: true   # STRICT (recommended): only flag lines with real in-game chat structure - a "<name> says:" attribution, an [EMS]/[PD]/[911] tag, or a "* ... dials 911 *" action. Ignores stat dumps, faction rosters and other log noise. Set to false only if your server shows 911 with no such structure.
   call_block:
-    enabled: true
-  skip_own_names: []
-  panic_button: true
+    enabled: true          # parse MDC / in-game 911 call cards (Call ID, Situation, Location, Number)
+  skip_own_names: []       # character names to ignore, e.g. ["Connor Myer"]. When the AI sees "<name> says:" the line is skipped. Helps preserve tokens on custom AI APIs.
+  panic_button: true       # react to in-game panic-button alerts with an urgent Code 3 officer-in-distress call-out
   cad_updates:
-    enabled: true
-    scope: own
+    enabled: true          # acknowledge "<call sign>, Dispatch, update my CAD location/status" radio requests
+    scope: own             # "own" = only your call signs (from Unit call-outs > Your call signs); "all" = any unit's CAD update request
   code_six:
-    enabled: true
-    scope: own
-    detail: detailed
+    enabled: true          # acknowledge "<call sign>, mark me code six / show me code six / code six" over the radio
+    scope: own             # "own" = only your call signs (from Unit call-outs > Your call signs); "all" = any unit going code six
+    detail: detailed       # "detailed" = read back the vehicle and license plate (spelled phonetically) on traffic stops; "simple" = call sign and location only
   clear_ack:
-    enabled: true
-    scope: own
+    enabled: true          # acknowledge a unit clearing / going available ("<call sign>, show me clear", "<call sign>, clear", "mark me available"). Also "<call sign>, clear from MRS/PAB/residence" = starting the watch -> "have a safe shift" style reply.
+    scope: own             # "own" = only your call signs; "all" = any unit clearing
   code_seven:
-    enabled: true
-    scope: own
+    enabled: true          # acknowledge a unit going code seven / out of service ("<call sign>, show me code seven", "<call sign>, code seven <location>")
+    scope: own             # "own" = only your call signs; "all" = any unit going code seven
   opg:
-    enabled: true
-    scope: own
+    enabled: true          # flag and acknowledge Official Police Garage requests - "roll me OPG to Route 68", "OPG flatbed", "requesting a tow truck from OPG"
+    scope: own             # "own" = only your call signs; "all" = any unit requesting OPG
   end_of_watch:
-    enabled: true
-    scope: own
+    enabled: true          # acknowledge end of watch / EOW / signing off and show the unit off duty
+    scope: own             # "own" = only your call signs; "all" = any unit going end of watch
   out_status:
-    enabled: true
-    scope: own
+    enabled: true          # "<call sign>, out to <place>" = en route and unavailable; "<call sign>, out at <place>" = unavailable at that location
+    scope: own             # "own" = only your call signs; "all" = any unit going out to / out at
   alarms:
-    enabled: true
+    enabled: true          # flag property alarm traffic (silent, audible, burglary, commercial, residential) and put out a call
+
 llm:
   enabled: true
   provider: openai_compatible
-  max_tokens: 400
-  reasoning_effort: low
+  max_tokens: 400          # ceiling for the AI rewrite; kept high so reasoning models (e.g. gpt-oss) aren't cut off mid-call-out
+  reasoning_effort: low    # reasoning models (Groq gpt-oss-120b, o-series, DeepSeek-R): 'low' keeps the hidden reasoning short so the spoken return isn't truncated. Options: low | medium | high
   base_url: https://api.openai.com/v1
   model: gpt-4o
-  tac_referral: true
-  api_key: ''
+  tac_referral: true      # on priority calls (pursuits, shots fired, officer down) add "refer to TAC"
+  api_key: ''             # optional; leave blank to use the built-in offline LAPD generator
   timeout: 20
-  emergency_only: true
-  verify_flags: false
-  system_prompt: 'You are a veteran LAPD Radio Telephone Operator (RTO / dispatcher)
-    working a GTA World roleplay server that uses the San Andreas Penal Code. Convert
-    the player''s in-game 911 report or MDC call card into ONE realistic LAPD radio
-    call-out, delivered in a calm, clipped, professional dispatcher cadence. Output
-    ONLY the raw spoken words - no quotation marks, no labels, no markdown, no stage
-    directions. NEVER narrate timing: do not say "just occurred", "now occurring",
-    "moments ago", or invent a time; a real RTO states the crime and location, not
-    when it was reported. NEVER read the caller''s name or phone number. Structure
-    it as: units, then crime / penal code, then location, then a brief detail, then
-    the incident, then the response code, then the closing. Open with "All units"
-    or "Control to all units". State the San Andreas Penal Code section number and
-    name when applicable (202 murder, 205 manslaughter, 206 assault, 207 assault with
-    a deadly weapon, 208 battery, 209 aggravated battery, 210 kidnapping, 211 human
-    trafficking, 214 criminal threats, 215 robbery, 216 armed robbery, 219 sexual
-    battery, 221 domestic violence, 222 caustic chemicals, 301 arson, 302 burglary,
-    304 grand theft, 305 petty theft, 306 grand theft auto, 307 grand theft firearm,
-    310 trespassing, 311 vandalism, 419 reckless driving, 430 impaired driver, 432
-    street racing, 503 prostitution, 505 stalking, 606 drug trafficking, 706 brandishing,
-    707 shots fired, 708 shooting from a vehicle). ALWAYS include the location. The
-    Call ID is the incident number: refer to it ONLY as the "incident" and say ONLY
-    its last four digits; if no incident number is given, omit it entirely. YOU decide
-    the response code from the content: Code 3 for any in-progress, violent, weapon,
-    or life-threatening call; Code 2 otherwise. Write every number as separate spoken
-    digits (911 is "nine one one"; incident 0907 is "incident nine oh seven"). ALWAYS
-    end with an LAPD closing such as "Units responding, identify." or "Any unit to
-    handle, identify." Keep each sentence tight and professional. Use ONLY details
-    present in the input; never invent suspect descriptions, names, times, or specifics.
-    LENGTH: give a full, informative broadcast of two to four sentences that narrates
-    what is happening, not just the crime name. Attribute it to the caller using phrases
-    like "reporting party states", "caller reports", or "per the RP", and summarise
-    the key facts (suspects, weapons, vehicles, injuries, descriptions) using ONLY
-    what is in the input. LOCATION: if the location field is missing or is not a real
-    place (for example "I told ya" or "unknown"), look for a street or landmark in
-    the situation and use that; if there is still none, say the caller did not provide
-    a location and to use the computer-aided dispatch, CAD, to trace it. TONE: match
-    your urgency to the risk, and on priority calls (pursuit, shots fired, officer
-    needs help) direct units to the tactical channel, for example "refer to TAC-1".
-    Vary your closing so you do not end every call the same way.'
+  emergency_only: true    # never run TTS on non-emergency / landline calls
+  verify_flags: false     # opt-in: ask the AI to confirm borderline flags (911 calls / chat / radio) are real before dispatch; needs api_key; fails open on error
+  system_prompt: >-
+    You are a veteran LAPD Radio Telephone Operator (RTO / dispatcher) working a
+    GTA World roleplay server that uses the San Andreas Penal Code. Convert the
+    player's in-game 911 report or MDC call card into ONE realistic LAPD radio
+    call-out, delivered in a calm, clipped, professional dispatcher cadence.
+    Output ONLY the raw spoken words - no quotation marks, no labels, no
+    markdown, no stage directions. NEVER narrate timing: do not say "just
+    occurred", "now occurring", "moments ago", or invent a time; a real RTO
+    states the crime and location, not when it was reported. NEVER read the
+    caller's name or phone number. Structure it as: units, then crime / penal
+    code, then location, then a brief detail, then the incident, then the
+    response code, then the closing. Open with "All units" or "Control to all
+    units". State the San Andreas Penal Code section number and name when
+    applicable (202 murder, 205 manslaughter, 206 assault, 207 assault with a
+    deadly weapon, 208 battery, 209 aggravated battery, 210 kidnapping, 211
+    human trafficking, 214 criminal threats, 215 robbery, 216 armed robbery, 219
+    sexual battery, 221 domestic violence, 222 caustic chemicals, 301 arson, 302
+    burglary, 304 grand theft, 305 petty theft, 306 grand theft auto, 307 grand
+    theft firearm, 310 trespassing, 311 vandalism, 419 reckless driving, 430
+    impaired driver, 432 street racing, 503 prostitution, 505 stalking, 606 drug
+    trafficking, 706 brandishing, 707 shots fired, 708 shooting from a vehicle).
+    ALWAYS include the location. The Call ID is the incident number: refer to it
+    ONLY as the "incident" and say ONLY its last four digits; if no incident
+    number is given, omit it entirely. YOU decide the response code from the
+    content: Code 3 for any in-progress, violent, weapon, or life-threatening
+    call; Code 2 otherwise. Write every number as separate spoken digits (911 is
+    "nine one one"; incident 0907 is "incident nine oh seven"). ALWAYS end with
+    an LAPD closing such as "Units responding, identify." or "Any unit to handle,
+    identify." Keep each sentence tight and professional. Use ONLY details present in
+    the input; never invent suspect descriptions, names, times, or specifics.
+    LENGTH: give a full, informative broadcast of two to four sentences that
+    narrates what is happening, not just the crime name. Attribute it to the
+    caller using phrases like "reporting party states", "caller reports", or
+    "per the RP", and summarise the key facts (suspects, weapons, vehicles,
+    injuries, descriptions) using ONLY what is in the input. LOCATION: if the
+    location field is missing or is not a real place (for example "I told ya"
+    or "unknown"), look for a street or landmark in the situation and use that;
+    if there is still none, say the caller did not provide a location and to
+    use the computer-aided dispatch, CAD, to trace it. TONE: match your urgency
+    to the risk, and on priority calls (pursuit, shots fired, officer needs
+    help) direct units to the tactical channel, for example "refer to TAC-1".
+    Vary your closing so you do not end every call the same way.
+
 tts:
-  provider: edge
-  speak_digits: true
+  provider: edge           # edge = FREE neural voice (no key); pyttsx3 = offline; elevenlabs | google. Auto-falls back edge -> pyttsx3.
+  speak_digits: true       # speak numbers digit-by-digit ("nine one one", not "nine hundred eleven")
   edge:
     voice: en-US-AriaNeural
-    rate: +0%
-    pitch: +0Hz
+    rate: "+0%"
+    pitch: "+0Hz"
   pyttsx3:
     rate: 175
     voice_contains: zira
   elevenlabs:
-    api_key: ''
+    api_key: 759c2bab7710a0e017d0f733e00f4050656644af0cd54588373afcfdfae3c5f1
     voice_id: pYduSEMlSc5NZ5UXU4aO
     model_id: eleven_turbo_v2
     stability: 0.5
@@ -121,6 +138,7 @@ tts:
     voice_name: en-US-Neural2-F
     speaking_rate: 1.0
     pitch: 0.0
+
 radiofx:
   enabled: true
   intensity: 0.6
@@ -129,78 +147,139 @@ radiofx:
   noise_level: 0.004
   distortion: 0.35
   key_click: true
+
 playback:
   device: null
   volume: 1.0
   max_queue: 12
+
 alert:
   enabled: true
-  scope: all
+  scope: all               # "all" = play alert before every call-out; "priorities" = only urgent Code 3 / officer-in-distress calls
   path: assets/dispatch_alert.wav
   volume: 0.9
   gap_ms: 150
+
 location:
-  callsigns: []
+  callsigns: []            # your unit call signs, e.g. ["2XL13", "2Adam55"] -- spoken with phonetic alphabet
+
 hotkeys:
-  enabled: true
-  start: ''
-  stop: ''
+  enabled: true            # bind global Start/Stop keys (needs the 'keyboard' package)
+  start: ''                # e.g. f9   (set in Settings > Global hotkeys)
+  stop: ''                 # e.g. f10
+
 ui:
-  mode: gui
-  theme: light
+  mode: gui                # "gui" or "cli"
+  theme: light             # "light" or "dark" (toggle on the Dashboard)
   recent_limit: 20
-  open_monitor: 0
-  sidebar_collapsed: false
-  debug: false
-  minimize_to_tray: false
+  open_monitor: 0          # which display to open the app window on (0 = primary/default; pick from the dropdown in Settings)
+  sidebar_collapsed: false # start with the navigation sidebar collapsed to icons only
+  debug: false             # show a live diagnostics console (VS Code-style) on the Report a bug tab
+  minimize_to_tray: false  # when on, the minimize button hides the app to the system tray instead of the taskbar
+
+# ---------------------------------------------------------------------------
+# Automatic updates. The app checks this URL for a newer release and can
+# download and install it for you from the About page.
+#   - A GitHub releases API URL is understood directly: the Setup .exe attached
+#     to the release is what gets installed.
+#   - Any other URL should return JSON, for example:
+#     {"version": "1.6.0", "url": "https://.../Setup.exe", "notes": "what changed",
+#      "sha256": "optional but recommended"}
+# ---------------------------------------------------------------------------
 updates:
   enabled: true
-  check_on_start: true
+  check_on_start: true     # check quietly when the app opens
   manifest_url: https://api.github.com/repos/coopik/GTAW-Dispatch-Relay/releases/latest
-  allow_prerelease: false
+  allow_prerelease: false  # also offer pre-release builds
   timeout: 15
+
 reporting:
-  enabled: true
+  enabled: true            # allow sending bug reports (and auto-detected errors) to the developer
   webhook_url: https://discord.com/api/webhooks/1527758313704521788/LeZdaObHQbFKAd1DcotqtqMqX5MnfZzBK9MZGcRs7HJcPVVVVkScUatSwGNdFaXMwfwO
-  report_system_errors: true
-  user_cooldown_sec: 60
-  error_cooldown_sec: 120
-  max_per_hour: 8
-  max_message_len: 1500
+  report_system_errors: true  # also forward errors the app detects on its own
+  user_cooldown_sec: 60    # minimum seconds between manual bug reports (anti-spam)
+  error_cooldown_sec: 120  # minimum seconds between repeats of the same auto-detected error
+  max_per_hour: 8          # hard cap on reports sent per rolling hour (anti-abuse)
+  max_message_len: 1500    # trim long reports before sending
+
+# ---------------------------------------------------------------------------
+# MDC Lookup Assistant (OPTIONAL, OFF BY DEFAULT)
+# ---------------------------------------------------------------------------
+# This module lets the app listen for spoken "run this name / plate" requests
+# it sees on screen, look them up in GTA World's *Web* MDC (the browser system
+# at https://mdc.gta.world/, NOT the game), and read the result back over the
+# radio voice. It is READ-ONLY: it only performs searches, never edits records.
+#
+# !! IMPORTANT - READ BEFORE ENABLING !!
+#   * Automating a logged-in website may violate GTA World's rules / ToS on
+#     third-party tools. Use at your own risk on your OWN account only.
+#     by inspecting the live MDC - the defaults are PLACEHOLDERS and will not
+#     work until verified. Use your browser's DevTools (Network / Inspect).
+#   * Your login is done by YOU in a real browser window; the app never sees or
+#     stores your username/password. Only the resulting session cookies are
+#     saved, encrypted with Windows DPAPI (tied to your Windows account).
 mdc_lookup:
-  enabled: false
-  scope: own
-  cooldown_sec: 8
-  max_queue: 5
-  timeout: 15
-  response_channel: ''
-  user_agent: ''
-  standby_ack: true
-  ai_read_page: true
-  render_page: true
+  enabled: false           # master switch - turn on from Settings > MDC Lookup (use at your own risk)
+  scope: own               # "own" = only react when one of YOUR callsigns makes the request; "all" = any unit
+  cooldown_sec: 8          # minimum seconds between lookups (rate limiting - do not lower recklessly)
+  max_queue: 5             # max pending lookups; extras are dropped and logged
+  timeout: 15              # per-request network timeout (seconds)
+  response_channel: ''     # optional label spoken before the result, e.g. "TAC 2" (blank = none)
+  user_agent: ''           # optional custom User-Agent; blank = a normal desktop browser UA
+  standby_ack: true        # the moment a lookup is flagged, say "Copy {callsign}, standby" on the air; the full return follows once processing finishes
+  ai_read_page: true       # let the AI read the whole record page (smarter, needs an LLM key); off = CSS parsing only
+  render_page: true        # load the page in the logged-in headless browser so arrest/criminal tables (loaded late) show up; auto-falls back to a plain request if the browser isn't installed
+
+  # Base site + the page the login browser opens. This is the real Web MDC.
   login_url: https://mdc.gta.world/
+
+  # Record pages. "{q}" is replaced with the URL-encoded name or plate. On the
+  # real Web MDC these are DIRECT record pages (no separate search step):
+  #   name  -> /record/<Full Name>   e.g. https://mdc.gta.world/record/John Doe
+  #   plate -> /dmv/<PLATE>           e.g. https://mdc.gta.world/dmv/ULX103
+  # The name must be the subject's exact character name; the plate is the tag
+  # with no spaces. If GTA World changes these paths, update them here.
   name_search_url: https://mdc.gta.world/record/{q}
   plate_search_url: https://mdc.gta.world/dmv/{q}
+
+  # Text fragments that indicate the app was bounced to a login page (session
+  # expired). Lower-cased substring match against the returned HTML.
   login_markers:
-  - login
-  - sign in
-  - username
-  - password
+    - login
+    - sign in
+    - username
+    - password
+
+  # CSS selector OVERRIDES (advanced, all optional). The parser already knows
+  # the current GTA World MDC layout, so you normally leave these BLANK. Only
+  # set one if GTA World changes its markup and a field stops being read - a
+  # non-blank value overrides the built-in extraction for that field.
   selectors:
     name:
-      full_name: ''
-      warrants: ''
-      warrant_item: ''
-      aliases: ''
-      vehicles: ''
-      license: ''
+      full_name: ''        # default: h3.characterDetailsName
+      warrants: ''         # default: the "Caution Codes" card + WANTED banner
+      warrant_item: ''     # default: each caution-code badge
+      aliases: ''          # default: none shown on GTAW record pages
+      vehicles: ''         # default: the "Registered Vehicles" card
+      license: ''          # default: the Licenses card statuses
     plate:
-      owner: ''
-      make: ''
-      model: ''
-      color: ''
-      year: ''
-      status: ''
-      stolen: ''
-  name_patterns: []
-  plate_patterns: []
+      owner: ''            # default: "Registered Owner" field
+      make: ''             # default: parsed from the vehicle heading
+      model: ''            # default: parsed from the vehicle heading
+      color: ''            # default: "Vehicle Paints"
+      year: ''             # default: not shown on GTAW DMV pages
+      status: ''           # default: "Insurance Status"
+      stolen: ''           # default: stolen/flag indicator if present
+
+  # Trigger phrases. Each MUST contain a named group so the app knows what to
+  # look up: (?P<target>...) for the name, (?P<plate>...) for a plate.
+  # These are matched case-insensitively, one pattern per line.
+  name_patterns:
+    - "(?:code ?ten|code ?10|10[ -]?29|name check|wants?(?: and warrants?)? check|warrant check|wants? check)(?: on| for| of)? (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3})"
+    - "(?:let me get|lemme get|get me|gimme|give me|can (?:you|i)(?: get| run| pull)?|could you|would you|please|run|do|need|pull up|pull|look ?up|check)(?: me| us| a| the)* (?:code ?ten|code ?10|10[ -]?29|name check|wants?(?: and warrants?)? check|warrant check|wants? check|check|name)(?: on| for| of)? (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3})"
+    - "(?:run|pull(?: up)?|look ?up|get|do)(?: me| us)?(?: a| the)? name(?: check)?(?: on| for| of)? (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3})"
+    - "(?:run|check|pull(?: up)?) (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3}) (?:for me|for wants(?: and warrants)?|for warrants|through (?:the )?(?:mdc|system|dispatch)|in the (?:mdc|system))"
+  plate_patterns:
+    - "(?:look ?up|run|check|pull(?: up)?|do|can (?:you|i)(?: run| check| pull)?|could you|would you|please)(?: me| a| this| that| the| us)* (?:license )?(?:plate|tag|registration|reg)(?: number)?(?: of| on| for)? (?P<plate>[a-z0-9][a-z0-9 -]{1,12})"
+    - "(?:code ?28|10[ -]?28|code ?27|10[ -]?27)(?: on| for| of)? (?P<plate>[a-z0-9][a-z0-9 -]{1,12})"
+    - "(?:who(?:'s| is| owns)|registered owner of|ro of|owner of|dmv(?: on| for| check)?) (?:the )?(?:plate |tag )?(?P<plate>[a-z0-9]{2,3}[ -]?[a-z0-9]{2,4})"

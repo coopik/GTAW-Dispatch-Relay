@@ -75,15 +75,33 @@ _CODE_SIX_HANDOFF_RE = re.compile(
     r"backup|back[- ]?up|need(?:s|ing)?\s+(?:help|assistance)|shots fired|"
     r"officer (?:down|needs|in distress|in trouble)|man down|in pursuit|"
     r"foot pursuit|vehicle pursuit|\b998\b|\b999\b|11[- ]?99|"
-    r"additional unit|another unit|more units?|second unit|extra unit|"
     r"supervisor|air ?unit|air ?ship|ambulance|\bems\b|fire|rescue",
     re.I,
 )
 _CODE_SIX_LOC_RE = re.compile(
     r"\b(?:on|at|near|by)\s+([A-Za-z0-9 .'\-/&]+?)"
-    r"(?=,|\bwith\b|\boccupied\b|\bocc\b|\bindex\b|\bplate\b|\bregistration\b|\breg\b|$)",
+    r"(?=,|\.\s|\.$|;|\bwith\b|\boccupied\b|\bocc\b|\bindex\b|\bplate\b|"
+    r"\bregistration\b|\breg\b|\bi have\b|\bi've\b|\bwe have\b|\bwe've\b|$)",
     re.I,
 )
+# A code six that also asks for another unit stays a code six: dispatch marks
+# the unit out AND puts the request on the air in the same transmission.
+_CODE_SIX_NEEDS_RE = re.compile(
+    r"\b(?:additionals?|additional units?|another unit|one more unit|"
+    r"more units?|second unit|extra unit|units? to assist|cover unit|a cover)\b",
+    re.I,
+)
+# A spoken location ends where the sentence does; everything after that is the
+# rest of the transmission and must never be echoed back as an address.
+_SENTENCE_BREAK_RE = re.compile(r"(?<=[A-Za-z0-9)\"'])\s*[.!?;]+\s+")
+_LOC_STOP_RE = re.compile(
+    r"\b(?:i have|i've|we have|we've|i am|i'm|we are|we're|there is|there's|"
+    r"there are|it is|it's|he is|she is|they are|showing|advise|be advised|"
+    r"send|start|roll|request|requesting|need|needs|needing|standby|stand by|"
+    r"possible|suspect|subject|male|female|victim|occupant)\b",
+    re.I,
+)
+_MAX_LOC_WORDS = 8
 _STREET_SUFFIX_RE = re.compile(
     r"\b(?:drive|dr|avenue|ave|av|street|st|boulevard|blvd|road|rd|way|lane|ln|"
     r"court|ct|place|pl|plaza|park|parkway|pkwy|highway|hwy|freeway|fwy|terrace|"
@@ -148,20 +166,20 @@ _CLEAR_ASK_RE = re.compile(
     re.I,
 )
 _CODE_SEVEN_LOC_RE = re.compile(
-    r"(?:at|on|near|by|from|@)\s+([A-Za-z0-9 .'\-/&]+?)(?=,|$)",
+    r"(?:at|on|near|by|from|@)\s+([A-Za-z0-9 .'\-/&]+?)(?=,|\.\s|\.$|;|$)",
     re.I,
 )
 
 DEFAULT_MDC_NAME_PATTERNS = [
-    r"(?:code ?ten|code ?10|wants?(?: and warrants?)? check|warrant check|wants? check|name check)(?: on| for| of)? (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3})",
-    r"(?:let me get|lemme get|get me|gimme|give me|can (?:you|i)(?: get| run| pull)?|could you|would you|please|run|do|need|pull up|pull|look ?up|check)(?: me| us| a| the)* (?:code ?ten|code ?10|wants?(?: and warrants?)? check|warrant check|wants? check|name check|check|name)(?: on| for| of)? (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3})",
+    r"(?:code ?ten|code ?10|10[ -]?29|name check|wants?(?: and warrants?)? check|warrant check|wants? check)(?: on| for| of)? (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3})",
+    r"(?:let me get|lemme get|get me|gimme|give me|can (?:you|i)(?: get| run| pull)?|could you|would you|please|run|do|need|pull up|pull|look ?up|check)(?: me| us| a| the)* (?:code ?ten|code ?10|10[ -]?29|name check|wants?(?: and warrants?)? check|warrant check|wants? check|check|name)(?: on| for| of)? (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3})",
     r"(?:run|pull(?: up)?|look ?up|get|do)(?: me| us)?(?: a| the)? name(?: check)?(?: on| for| of)? (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3})",
     r"(?:run|check|pull(?: up)?) (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3}) (?:for me|for wants(?: and warrants)?|for warrants|through (?:the )?(?:mdc|system|dispatch)|in the (?:mdc|system))",
 ]
 
 DEFAULT_MDC_PLATE_PATTERNS = [
     r"(?:look ?up|run|check|pull(?: up)?|do|can (?:you|i)(?: run| check| pull)?|could you|would you|please)(?: me| a| this| that| the| us)* (?:license )?(?:plate|tag|registration|reg)(?: number)?(?: of| on| for)? (?P<plate>[a-z0-9][a-z0-9 -]{1,12})",
-    r"(?:registration check|reg check|dmv return|dmv check)(?: on| for| of)? (?P<plate>[a-z0-9][a-z0-9 -]{1,12})",
+    r"(?:code ?28|10[ -]?28|code ?27|10[ -]?27)(?: on| for| of)? (?P<plate>[a-z0-9][a-z0-9 -]{1,12})",
     r"(?:who(?:'s| is| owns)|registered owner of|ro of|owner of|dmv(?: on| for| check)?) (?:the )?(?:plate |tag )?(?P<plate>[a-z0-9]{2,3}[ -]?[a-z0-9]{2,4})",
 ]
 
@@ -193,6 +211,20 @@ _ALARM_RE = re.compile(
 _ALARM_KIND_RE = re.compile(
     r"\b(silent|audible|burglary|burglar|commercial|residential|business|property|"
     r"fire|hold\s?-?up|robbery)\b",
+    re.I,
+)
+# Wording that closes an alarm call instead of opening one.
+_ALARM_CLOSE_RE = re.compile(
+    r"\bcode\s*(?:4|four)\b|\bunfounded\b|\bfalse\s+alarm\b|\bno\s+signs?\b|"
+    r"\bnothing\s+(?:showing|here|found|further)\b|\ball\s+clear\b|"
+    r"\bno\s+(?:suspects?|entry|forced\s+entry|damage|sign)\b|\bsecure\b|"
+    r"\bdisregard\b|\bcancel(?:led|ed|ling)?\b|\bno\s+longer\b|\bturned\s+out\b|"
+    r"\bgonna\s+be\b|\bgoing\s+to\s+be\b|\bwas\s+a\b|\bhandled\b|"
+    r"\bchecks?\s+(?:out|clear|okay|ok)\b",
+    re.I,
+)
+_ALARM_PAST_RE = re.compile(
+    r"\b(?:last|previous|prior|earlier|that|the\s+other)\s+(?:\w+\s+){0,2}alarm\b",
     re.I,
 )
 
@@ -252,6 +284,9 @@ class Flagger:
         self.dedup_cooldown = float(180 if _cd is None else _cd)
         self._seen: "OrderedDict[str, float]" = OrderedDict()
         self._seen_calls: "OrderedDict[str, float]" = OrderedDict()
+        self._seen_status: "OrderedDict[str, float]" = OrderedDict()
+        _sd = cfg.get("status_dedup_sec")
+        self.status_dedup_sec = float(90 if _sd is None else _sd)
         cb = cfg.get("call_block", {}) or {}
         self.call_block_enabled = bool(cb.get("enabled", True))
         self.radio_enabled = bool(cfg.get("radio_traffic", True))
@@ -316,20 +351,27 @@ class Flagger:
         return " ".join(tokens).strip()
 
     def _seen_lookup(
-        self, store: "OrderedDict[str, float]", key: str, fuzzy: bool
+        self,
+        store: "OrderedDict[str, float]",
+        key: str,
+        fuzzy: bool,
+        cooldown: float | None = None,
     ) -> bool:
         now = time.monotonic()
+        window = self.dedup_cooldown if cooldown is None else float(cooldown)
         match = None
         if key in store:
             match = key
-        elif fuzzy:
+        # Short keys such as "25t15 clear" are ~85% similar to another unit's
+        # "25m14 clear", so fuzzy matching is only safe on longer lines.
+        elif fuzzy and len(key) >= 24:
             for prev in store:
                 if SequenceMatcher(None, key, prev).ratio() >= self.fuzzy_threshold:
                     match = prev
                     break
         if match is not None:
             last = store[match]
-            if self.dedup_cooldown > 0 and (now - last) >= self.dedup_cooldown:
+            if window > 0 and (now - last) >= window:
                 del store[match]
                 store[key] = now
                 store.move_to_end(key)
@@ -351,6 +393,16 @@ class Flagger:
         if not key:
             return False
         return self._seen_lookup(self._seen, key, fuzzy=True)
+
+    def _is_new_status(self, line: str) -> bool:
+        # Status calls repeat verbatim all shift, so they get an exact-match
+        # store with a short time window instead of the fuzzy content filter.
+        key = self._normalize(line)
+        if not key:
+            return False
+        return self._seen_lookup(
+            self._seen_status, key, fuzzy=False, cooldown=self.status_dedup_sec
+        )
 
     def _is_new_call(self, key: str) -> bool:
         if not key:
@@ -639,6 +691,7 @@ class Flagger:
             return None
         if _CODE_SIX_HANDOFF_RE.search(body):
             return None
+        needs = "additional" if _CODE_SIX_NEEDS_RE.search(body) else None
         m = _CALLSIGN_RE.match(body)
         callsign = m.group(1).strip() if m else None
         if not callsign:
@@ -657,20 +710,46 @@ class Flagger:
             location = ml.group(1).strip(" .,-") or None
         if not location:
             location = self._bare_location(after)
+        location = self._clean_location(location)
         details = None
         if self.code6_detail == "detailed":
             md = _CODE_SIX_DETAIL_RE.search(after)
             if md:
                 details = md.group(1).strip(" .,-") or None
-        if not self._is_new(body):
+                if details:
+                    cut = _SENTENCE_BREAK_RE.search(details)
+                    if cut:
+                        details = details[: cut.start()].strip(" .,-") or None
+        if not self._is_new_status(body):
             return None
         return {
             "type": "code6",
             "callsign": callsign,
             "location": location,
             "details": details,
+            "needs": needs,
             "raw": body,
         }
+
+    @staticmethod
+    def _clean_location(where: str | None) -> str | None:
+        if not where:
+            return None
+        text = str(where).strip()
+        cut = _SENTENCE_BREAK_RE.search(text)
+        if cut:
+            text = text[: cut.start()]
+        stop = _LOC_STOP_RE.search(text)
+        if stop and stop.start() > 0:
+            text = text[: stop.start()]
+        text = text.strip(" .,-;:")
+        words = text.split()
+        if len(words) > _MAX_LOC_WORDS:
+            text = " ".join(words[:_MAX_LOC_WORDS])
+        text = text.strip(" .,-;:")
+        if len(re.sub(r"[^A-Za-z0-9]", "", text)) < 2:
+            return None
+        return text or None
 
     @staticmethod
     def _bare_location(after: str) -> str | None:
@@ -724,7 +803,7 @@ class Flagger:
             return None
         if self.clear_scope == "own" and not self._match_own_callsign(callsign):
             return None
-        if not self._is_new(body):
+        if not self._is_new_status(body):
             return None
         flag = {"type": "clear", "callsign": callsign, "raw": body}
         if start_of_watch:
@@ -752,7 +831,7 @@ class Flagger:
         ml = _CODE_SEVEN_LOC_RE.search(after)
         if ml:
             location = ml.group(1).strip(" .,-") or None
-        if not self._is_new(body):
+        if not self._is_new_status(body):
             return None
         return {"type": "code7", "callsign": callsign, "location": location, "raw": body}
 
@@ -767,9 +846,10 @@ class Flagger:
         where = re.sub(r"(?i)^the\s+", "", where.strip())
         where = re.sub(r"\s{2,}", " ", where).strip(" .,-;:")
         where = re.sub(r"\s+,", ",", where)
-        if len(re.sub(r"[^A-Za-z0-9]", "", where)) < 3:
+        where = Flagger._clean_location(where)
+        if not where or len(re.sub(r"[^A-Za-z0-9]", "", where)) < 3:
             return None
-        return where or None
+        return where
 
     def _line_callsign(self, body: str) -> str | None:
         m = _CALLSIGN_RE.match(body)
@@ -805,7 +885,7 @@ class Flagger:
                 "transport": "transport",
             }.get(key)
         location = self._trailing_location(body, m_opg.end())
-        if not self._is_new(body):
+        if not self._is_new_status(body):
             return None
         return {
             "type": "opg",
@@ -826,7 +906,7 @@ class Flagger:
         callsign = self._line_callsign(body)
         if self.eow_scope == "own" and not self._match_own_callsign(callsign or ""):
             return None
-        if not self._is_new(body):
+        if not self._is_new_status(body):
             return None
         return {"type": "eow", "callsign": callsign, "raw": body}
 
@@ -846,12 +926,13 @@ class Flagger:
         mode = m.group("mode").lower()
         where = (m.group("where") or "").strip(" .,-;:")
         where = re.sub(r"(?i)\bfor\s+(?:the\s+)?(?:night|day|shift)\b", "", where).strip()
+        where = self._clean_location(where) or ""
         if len(re.sub(r"[^A-Za-z0-9]", "", where)) < 2:
             return None
         callsign = self._line_callsign(body)
         if self.out_status_scope == "own" and not self._match_own_callsign(callsign or ""):
             return None
-        if not self._is_new(body):
+        if not self._is_new_status(body):
             return None
         return {
             "type": "out_status",
@@ -870,13 +951,19 @@ class Flagger:
         m = _ALARM_RE.search(body)
         if not m or _PANIC_RE.search(body):
             return None
+        if _ALARM_CLOSE_RE.search(body) or _ALARM_PAST_RE.search(body):
+            return None
         kind = "property"
         mk = _ALARM_KIND_RE.search(body)
         if mk:
             kind = re.sub(r"\s+", "", mk.group(1).lower()).replace("-", "")
             kind = {"burglar": "burglary", "holdup": "hold-up"}.get(kind, kind)
         location = self._trailing_location(body, m.end())
+        if not location:
+            location = self._trailing_location(body)
         callsign = self._line_callsign(body)
+        if not location and callsign:
+            return None
         if not self._is_new(body):
             return None
         return {
