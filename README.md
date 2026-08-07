@@ -302,6 +302,7 @@ Rules applied to call cards:
 - **input_source.replay_last**: re-process this many existing lines on start (`0` = only brand-new chat).
 - **location.track_area_from_radio**: learn your current area from your own radio traffic, for area call-outs.
 - **flagging.patterns**: regex list.
+- **updates.allow_prerelease**: when false the newest stable release wins, and pre-releases are only used if the repository has nothing else.
 - **flagging.status_dedup_sec**: seconds a repeated status call ("25T15, clear.") stays suppressed before it may be read again. Default 90. **min_body_length**, **fuzzy_threshold** (dedup strictness), **dedup_history**. **call_block.enabled**: parse call cards.
 - **llm**: `enabled`, `base_url`, `model`, `api_key`, `system_prompt` (the LAPD dispatcher persona), `verify_flags` (opt-in AI double-check of borderline flags before dispatch).
 - **tts**: `provider`, `speak_digits`, and per-provider settings (`elevenlabs`, `edge`, `google`, `pyttsx3`).
@@ -442,3 +443,61 @@ The Chromium browser used for the manual login is **not** bundled inside the pac
 ## Legal / fair use
 
 For personal use on a single machine. It only reads visible pixels and produces local audio, like a person reading chat aloud. It does not read game memory/files/network, performs no automated in-game actions, and does not broadcast audio to anyone else. Follow your server's rules on third-party tools.
+
+## Testing without being in game
+
+Everything below runs from the app folder. `py` on Windows, `python3` elsewhere.
+
+**1. Check whether a radio line gets flagged, and hear the reply**
+
+```
+py tools\test_flag.py "25T15, code six at Forum Drive."
+py tools\test_flag.py --speak "25T15, code six at Forum Drive."
+```
+
+`--speak` runs the real pipeline: TTS voice, radio effect, alert tone, your
+output device. Add `--no-alert` to drop the tone.
+
+Other options:
+
+| Option | What it does |
+| --- | --- |
+| `--all` | Force every flag type on and scope them to "all" |
+| `--speak` | Read the dispatch reply out loud |
+| `--no-alert` | With `--speak`, skip the alert tone |
+| `--config PATH` | Use a different config.yaml |
+| `--config appdata` | Use the installed app's settings in `%APPDATA%` |
+
+The tool prints which config file it loaded, your call signs, and each scope.
+If nothing is flagged it tells you why - usually no call signs set, or MDC
+lookups switched off.
+
+**Two config files:** when you run from source, the app reads and saves the
+`config.yaml` in the app folder. The installed build reads and saves
+`%APPDATA%\911 Dispatch Relay\config.yaml` instead. Point the tools at the
+installed one with `--config appdata`.
+
+**2. Check what the MDC parser reads from a record**
+
+Save a record page from your browser (Ctrl+S), then:
+
+```
+py tools\test_mdc.py "C:\path\to\record.html"
+py tools\test_mdc.py "C:\path\to\dmv.html" --plate
+py tools\test_mdc.py "C:\path\to\record.html" --speak
+```
+
+It prints every field it parsed plus the line dispatch would say, so you can
+see immediately if a caution flag or a points value was misread.
+
+**3. Play a whole fake shift into the app**
+
+```
+py tools\simulate_chat.py
+py tools\simulate_chat.py --say "25T15, code ten on Joseph Panicucci."
+```
+
+It writes a fake `.storage` file and prints its path. In Settings, set the
+chat log input to that path, turn auto-detect off, Save, then Start. The app
+only reacts to lines written after you press Start.
+

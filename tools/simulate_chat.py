@@ -28,6 +28,9 @@ SCENARIO = [
         "* Situation: There is a dead body on the sidewalk, nobody is moving him.",
     ],
     "** [S: 1 | CH: BASE] Connor Myer says: 2W63, show me code six on Strawberry Avenue.",
+    "** [S: 1 | CH: BASE] Connor Myer says: 2W63, code ten on Joseph Panicucci.",
+    "** [S: 1 | CH: BASE] Alyssa Nowakowski says: 25T15, run a plate on OQL175.",
+    "** [S: 1 | CH: BASE] Connor Myer says: 2W63, out to MRS.",
     "** [S: 3 | CH: TRAFFIC] Alyssa Nowakowski says: 25T15, traffic stop, black Sultan, plate SWQ221.",
     "(( (10) Sergeant II Kayayday: nice one lol ))",
     "> Connor Myer reaches for a OC Spray.",
@@ -42,6 +45,14 @@ SCENARIO = [
     "[DISPATCH] You have updated your status.",
     "** [S: 1 | CH: BASE] Connor Myer says: 2W63, show me clear.",
 ]
+
+
+def radio_line(text):
+    """Turn plain text into a radio line, or pass a full chat line through."""
+    text = str(text)
+    if text.startswith(("**", "[", "*", "(", ">")) or " says: " in text:
+        return text
+    return "** [S: 1 | CH: BASE] Test Officer says: " + text
 
 
 def stamp(line):
@@ -80,9 +91,15 @@ def main():
     ap.add_argument("--list", action="store_true", help="print the scenario and exit")
     ap.add_argument("--from-file", default=None,
                     help="replay the chat out of a real .storage file instead of the fake scenario")
+    ap.add_argument("--say", action="append", default=None,
+                    help="send your own line instead of the scenario; repeat "
+                         "for more lines, e.g. --say \"25T15, code ten on "
+                         "Joseph Panicucci.\"")
     args = ap.parse_args()
 
     events = SCENARIO
+    if args.say:
+        events = [radio_line(x) for x in args.say]
     if args.from_file:
         events = events_from_file(args.from_file)
         if not events:

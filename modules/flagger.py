@@ -171,15 +171,15 @@ _CODE_SEVEN_LOC_RE = re.compile(
 )
 
 DEFAULT_MDC_NAME_PATTERNS = [
-    r"(?:code ?ten|code ?10|10[ -]?29|name check|wants?(?: and warrants?)? check|warrant check|wants? check)(?: on| for| of)? (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3})",
-    r"(?:let me get|lemme get|get me|gimme|give me|can (?:you|i)(?: get| run| pull)?|could you|would you|please|run|do|need|pull up|pull|look ?up|check)(?: me| us| a| the)* (?:code ?ten|code ?10|10[ -]?29|name check|wants?(?: and warrants?)? check|warrant check|wants? check|check|name)(?: on| for| of)? (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3})",
+    r"(?:code ?ten|code ?10|wants?(?: and warrants?)? check|warrant check|wants? check|name check)(?: on| for| of)? (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3})",
+    r"(?:let me get|lemme get|get me|gimme|give me|can (?:you|i)(?: get| run| pull)?|could you|would you|please|run|do|need|pull up|pull|look ?up|check)(?: me| us| a| the)* (?:code ?ten|code ?10|wants?(?: and warrants?)? check|warrant check|wants? check|name check|check|name)(?: on| for| of)? (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3})",
     r"(?:run|pull(?: up)?|look ?up|get|do)(?: me| us)?(?: a| the)? name(?: check)?(?: on| for| of)? (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3})",
     r"(?:run|check|pull(?: up)?) (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3}) (?:for me|for wants(?: and warrants)?|for warrants|through (?:the )?(?:mdc|system|dispatch)|in the (?:mdc|system))",
 ]
 
 DEFAULT_MDC_PLATE_PATTERNS = [
     r"(?:look ?up|run|check|pull(?: up)?|do|can (?:you|i)(?: run| check| pull)?|could you|would you|please)(?: me| a| this| that| the| us)* (?:license )?(?:plate|tag|registration|reg)(?: number)?(?: of| on| for)? (?P<plate>[a-z0-9][a-z0-9 -]{1,12})",
-    r"(?:code ?28|10[ -]?28|code ?27|10[ -]?27)(?: on| for| of)? (?P<plate>[a-z0-9][a-z0-9 -]{1,12})",
+    r"(?:registration check|reg check|dmv return|dmv check)(?: on| for| of)? (?P<plate>[a-z0-9][a-z0-9 -]{1,12})",
     r"(?:who(?:'s| is| owns)|registered owner of|ro of|owner of|dmv(?: on| for| check)?) (?:the )?(?:plate |tag )?(?P<plate>[a-z0-9]{2,3}[ -]?[a-z0-9]{2,4})",
 ]
 

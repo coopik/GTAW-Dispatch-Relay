@@ -30,7 +30,7 @@ from modules.reporter import Reporter
 from modules.mdc_lookup import MDCManager
 from modules.tts import TTSEngine
 
-APP_VERSION = "1.5.3"
+APP_VERSION = "1.5.4"
 
 BUNDLE_DIR = app_paths.bundle_dir()
 DEFAULT_CONFIG_PATH = os.path.join(BUNDLE_DIR, "config.yaml")

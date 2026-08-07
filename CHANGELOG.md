@@ -6,6 +6,16 @@
 > only be misleading, so they have been removed entirely. 1.4.0 is the first release of the
 > rebuilt app.
 
+## v1.5.4
+
+- Offline testing: `tools/test_flag.py` now reads your call signs the same way the app does (they were always blank before), takes `--config PATH` / `--config appdata`, prints which config file it loaded, explains why a line was not flagged, and can speak the reply out loud with `--speak`. `tools/test_mdc.py` gained `--speak` too.
+- The update check now finds releases the way the PatrolOne client does: if `releases/latest` returns nothing it reads the full release list, skips drafts, and falls back to a pre-release when that is all the repository has. Rate limiting, a private repository and a wrong repository name now each report what actually happened.
+- MDC name lookups no longer read out every caution code that exists. Caution flags are only taken from the subject's own caution-code badges, picker and legend markup is ignored, and anything that does not look like a flag is dropped.
+- Criminal points are only read from a field actually labelled criminal points, so `Age: 21` is never spoken as "21 criminal points" again.
+- Settings sections are collapsible and build their fields only while open, which makes the page open faster and easier to navigate. Added Expand all / Collapse all, and search now expands matching sections automatically.
+- Offline testing: `tools/test_flag.py --all` now recognises code ten and plate requests, `tools/simulate_chat.py --say "..."` sends your own radio line to the running app, and the new `tools/test_mdc.py` reads a saved MDC page and prints exactly what dispatch would say.
+- New colour language across the app, and settings search no longer redraws the page on every keystroke.
+
 ## v1.5.3
 
 - Code six acknowledgements no longer read the rest of the transmission back as the location. A location stops at the end of the sentence, at the point the sentence stops describing a place, and after eight words.

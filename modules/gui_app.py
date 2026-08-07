@@ -23,33 +23,33 @@ try:
 except Exception:
     usage = None
 
-APP_VERSION = "1.5.3"
+APP_VERSION = "1.5.4"
 
 PALETTE = {
-    "page": ("#f1f4f9", "#080d17"),
-    "sidebar": ("#ffffff", "#0c1322"),
-    "card": ("#ffffff", "#0f1829"),
-    "card_alt": ("#f5f7fb", "#16223a"),
-    "border": ("#e4e9f2", "#22304d"),
-    "text": ("#0b1220", "#eaeef6"),
-    "muted": ("#6b7a90", "#94a3b8"),
-    "primary": ("#4f46e5", "#6366f1"),
-    "primary_hover": ("#4338ca", "#4f46e5"),
-    "start": ("#0f9d58", "#22c55e"),
-    "start_hover": ("#0c7c46", "#16a34a"),
-    "stop": ("#dc2626", "#ef4444"),
-    "stop_hover": ("#b91c1c", "#dc2626"),
-    "neutral": ("#eceff5", "#1b2740"),
-    "neutral_hover": ("#dfe4ee", "#2a3a5c"),
-    "idle": ("#94a3b8", "#64748b"),
-    "live": ("#0f9d58", "#22c55e"),
-    "speak": ("#ea580c", "#fb923c"),
+    "page": ("#f4f6fb", "#070b14"),
+    "sidebar": ("#ffffff", "#0b1220"),
+    "card": ("#ffffff", "#101a2c"),
+    "card_alt": ("#f1f5fb", "#16233a"),
+    "border": ("#e3e9f3", "#1f2d49"),
+    "text": ("#0c1424", "#e9eff8"),
+    "muted": ("#657388", "#93a3ba"),
+    "primary": ("#1d6fe0", "#3b8bf5"),
+    "primary_hover": ("#1657b4", "#2a76dd"),
+    "start": ("#0e9f6e", "#20c997"),
+    "start_hover": ("#0b7f58", "#13a97e"),
+    "stop": ("#d92d3e", "#f05365"),
+    "stop_hover": ("#b21f2f", "#d92d3e"),
+    "neutral": ("#e9edf5", "#1a2740"),
+    "neutral_hover": ("#dce3ef", "#26375a"),
+    "idle": ("#93a3ba", "#5f6f88"),
+    "live": ("#0e9f6e", "#20c997"),
+    "speak": ("#e2670a", "#fb9f4a"),
 }
 
 IC_DARK = "#334155"
 IC_DARK_ON = "#cbd5e1"
-IC_PRIMARY = "#4f46e5"
-IC_PRIMARY_ON = "#818cf8"
+IC_PRIMARY = "#1d6fe0"
+IC_PRIMARY_ON = "#7db4fb"
 IC_WHITE = "#ffffff"
 
 
@@ -614,6 +614,8 @@ class DispatchApp(ctk.CTk):
             child.destroy()
         self._getters = []
         self._input_status_lbl = None
+        if not hasattr(self, "_sec_open"):
+            self._sec_open = {}
         try:
             query = (self._search_var.get() or "").strip().lower()
         except Exception:
@@ -622,28 +624,64 @@ class DispatchApp(ctk.CTk):
         for entry in SETTINGS_SCHEMA:
             title, icon, fields = entry[0], entry[1], entry[2]
             desc = entry[3] if len(entry) > 3 else None
-            disabled = entry[4] if len(entry) > 4 else False
             if query and not self._section_matches(title, fields, query):
                 continue
+            # Fields are built only while a section is open, so the page costs
+            # one header per section instead of every widget in the schema.
+            opened = True if query else bool(self._sec_open.get(title, shown == 0))
+            self._sec_open[title] = opened
             sec = self._card(self._settings_body)
-            sec.grid(row=shown, column=0, sticky="ew", padx=12, pady=8)
-            sec.grid_columnconfigure(1, weight=1)
-            ctk.CTkLabel(sec, text=f"  {title}", font=self.f_h, text_color=PALETTE["text"],
-                         image=self._icon(icon, 18, IC_PRIMARY), compound="left").grid(
-                row=0, column=0, columnspan=3, sticky="w", padx=18, pady=(14, 6))
-            row = 1
-            if desc:
-                ctk.CTkLabel(sec, text=desc, font=self.f_s, text_color=PALETTE["muted"],
-                             anchor="w", justify="left", wraplength=620).grid(
-                    row=row, column=0, columnspan=3, sticky="w", padx=18, pady=(0, 8))
-                row += 1
-            for field in fields:
-                row = self._add_field(sec, row, field)
+            sec.grid(row=shown, column=0, sticky="ew", padx=12, pady=6)
+            sec.grid_columnconfigure(0, weight=1)
+            caret = "\u25be" if opened else "\u25b8"
+            ctk.CTkButton(
+                sec, text="  %s   %s" % (caret, title), anchor="w", height=46,
+                corner_radius=12, font=self.f_h, fg_color="transparent",
+                text_color=PALETTE["text"], hover_color=PALETTE["card_alt"],
+                image=self._icon(icon, 18, IC_PRIMARY), compound="left",
+                command=lambda t=title: self._toggle_section(t),
+            ).grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 0))
+            if opened:
+                body = ctk.CTkFrame(sec, fg_color="transparent")
+                body.grid(row=1, column=0, sticky="ew", pady=(2, 12))
+                body.grid_columnconfigure(1, weight=1)
+                row = 0
+                if desc:
+                    ctk.CTkLabel(body, text=desc, font=self.f_s,
+                                 text_color=PALETTE["muted"], anchor="w",
+                                 justify="left", wraplength=620).grid(
+                        row=row, column=0, columnspan=3, sticky="w",
+                        padx=18, pady=(0, 8))
+                    row += 1
+                for field in fields:
+                    row = self._add_field(body, row, field)
             shown += 1
         if query and shown == 0:
             ctk.CTkLabel(self._settings_body, text="No settings match your search.",
                          font=self.f_b, text_color=PALETTE["muted"]).grid(
                 row=0, column=0, sticky="w", padx=20, pady=20)
+
+    def _toggle_section(self, title):
+        if not hasattr(self, "_sec_open"):
+            self._sec_open = {}
+        self._sec_open[title] = not bool(self._sec_open.get(title, False))
+        self._render_settings()
+
+    def _set_all_sections(self, opened):
+        if not hasattr(self, "_sec_open"):
+            self._sec_open = {}
+        for entry in SETTINGS_SCHEMA:
+            self._sec_open[entry[0]] = bool(opened)
+        self._render_settings()
+
+    def _search_changed(self):
+        job = getattr(self, "_search_job", None)
+        if job:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+        self._search_job = self.after(220, self._render_settings)
 
     def _add_field(self, parent, row, field):
         kind = field["kind"]
@@ -1094,12 +1132,22 @@ class DispatchApp(ctk.CTk):
                            border_color=PALETTE["border"], text_color=PALETTE["text"],
                            placeholder_text="Search settings...")
         ent.grid(row=0, column=1, sticky="ew", padx=6, pady=10)
-        self._search_var.trace_add("write", lambda *a: self._render_settings())
+        self._search_var.trace_add("write", lambda *a: self._search_changed())
+        ctk.CTkButton(bar, text="Expand all", width=98, height=34, corner_radius=8,
+                      font=self.f_bb, fg_color=PALETTE["neutral"], text_color=PALETTE["text"],
+                      hover_color=PALETTE["neutral_hover"],
+                      command=lambda: self._set_all_sections(True)).grid(
+            row=0, column=2, padx=4, pady=10)
+        ctk.CTkButton(bar, text="Collapse all", width=108, height=34, corner_radius=8,
+                      font=self.f_bb, fg_color=PALETTE["neutral"], text_color=PALETTE["text"],
+                      hover_color=PALETTE["neutral_hover"],
+                      command=lambda: self._set_all_sections(False)).grid(
+            row=0, column=3, padx=4, pady=10)
         ctk.CTkButton(bar, text="Clear", width=76, height=34, corner_radius=8, font=self.f_bb,
                       fg_color=PALETTE["neutral"], text_color=PALETTE["text"],
                       hover_color=PALETTE["neutral_hover"],
                       command=lambda: self._search_var.set("")).grid(
-            row=0, column=2, padx=(6, 16), pady=10)
+            row=0, column=4, padx=(4, 16), pady=10)
 
     @staticmethod
     def _section_matches(title, fields, query):

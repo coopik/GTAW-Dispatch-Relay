@@ -92,6 +92,71 @@ class Updater:
     def can_install(self) -> bool:
         return bool(app_paths.is_frozen() and os.name == "nt")
 
+    def _get(self, url):
+        return requests.get(
+            url,
+            timeout=self.timeout,
+            allow_redirects=True,
+            headers={"User-Agent": _UA, "Accept": "application/vnd.github+json"},
+        )
+
+    def _fetch(self):
+        url = self.manifest_url
+        if "api.github.com" not in url:
+            resp = self._get(url)
+            resp.raise_for_status()
+            return resp.json(), None
+        base = url.split("/releases", 1)[0]
+        slug = self.repo_slug() or "the configured repository"
+        # /releases/latest hides drafts AND pre-releases, which is why a repo
+        # that only has pre-releases looks empty. Fall back to the full list.
+        if not self.allow_prerelease:
+            resp = self._get(base + "/releases/latest")
+            if resp.status_code == 200:
+                return resp.json(), None
+            if resp.status_code == 403:
+                return None, self._rate_limited(resp)
+            if resp.status_code not in (404, 401):
+                resp.raise_for_status()
+        resp = self._get(base + "/releases?per_page=30")
+        if resp.status_code == 403:
+            return None, self._rate_limited(resp)
+        if resp.status_code in (401, 404):
+            return None, (
+                "GitHub could not read %s. Check the repository name in "
+                "config.yaml and make sure the repository is public." % slug
+            )
+        resp.raise_for_status()
+        items = resp.json()
+        if not isinstance(items, list) or not items:
+            return None, (
+                "No releases published yet for %s. Publish a release on GitHub "
+                "and attach the installer to it." % slug
+            )
+        live = [r for r in items if isinstance(r, dict) and not r.get("draft")]
+        if not live:
+            return None, (
+                "%s only has draft releases. Publish one so the app can see it." % slug
+            )
+        stable = [r for r in live if not r.get("prerelease")]
+        pool = live if self.allow_prerelease else (stable or live)
+        pool = sorted(
+            pool,
+            key=lambda r: parse_version(str(r.get("tag_name") or r.get("name") or "")),
+            reverse=True,
+        )
+        return pool[0], None
+
+    @staticmethod
+    def _rate_limited(resp):
+        left = ""
+        try:
+            if str(resp.headers.get("X-RateLimit-Remaining", "")) == "0":
+                left = " GitHub allows 60 checks an hour from one address."
+        except Exception:
+            pass
+        return "GitHub is rate limiting update checks right now." + left
+
     def check(self):
         if not self.configured():
             if requests is None:
@@ -99,23 +164,12 @@ class Updater:
             if not self.enabled:
                 return False, None, "Update checks are turned off."
             return False, None, "No update source is configured."
-        url = self.manifest_url
         try:
-            if "api.github.com" in url and self.allow_prerelease:
-                url = url.replace("/releases/latest", "/releases")
-            resp = requests.get(url, timeout=self.timeout,
-                                headers={"User-Agent": _UA,
-                                         "Accept": "application/vnd.github+json"})
-            if resp.status_code == 404:
-                return False, None, (
-                    "No releases published yet for %s. Publish a release on "
-                    "GitHub and attach the installer to it."
-                    % (self.repo_slug() or "the configured repository")
-                )
-            resp.raise_for_status()
-            data = resp.json()
+            data, err = self._fetch()
         except Exception as exc:
             return False, None, "Could not reach the update server: %s" % exc
+        if err:
+            return False, None, err
         try:
             info = self._parse(data)
         except Exception as exc:

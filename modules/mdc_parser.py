@@ -169,6 +169,54 @@ _CAUTION_KNOWN = [
     "crimes against children", "escape risk", "suicidal",
 ]
 
+_NOT_A_CAUTION = {
+    "caution codes", "caution code", "caution", "add", "add code", "remove",
+    "select", "select one", "choose", "none", "n/a", "code", "codes", "search",
+    "edit", "save", "close", "cancel", "available codes", "all codes", "legend",
+}
+_PICKER_HINT = re.compile(r"picker|legend|available|template|modal|dropdown|menu|select", re.I)
+
+
+def _in_picker(node) -> bool:
+    # The MDC page ships every possible caution code inside its picker markup,
+    # so anything living in that subtree is a menu entry, not a record flag.
+    try:
+        if node.find_parent(["select", "option", "template", "datalist"]) is not None:
+            return True
+        for parent in node.parents:
+            ident = " ".join(
+                [str(parent.get("id") or "")] + list(parent.get("class") or [])
+            )
+            if ident and _PICKER_HINT.search(ident):
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _looks_like_caution(text: str | None) -> bool:
+    t = (text or "").strip()
+    if not t or t.lower() in _NOT_A_CAUTION:
+        return False
+    if len(t) > 40 or ":" in t:
+        return False
+    words = t.split()
+    if len(words) > 5:
+        return False
+    if t.lower() in _CAUTION_KNOWN:
+        return True
+    return bool(re.fullmatch(r"[A-Za-z][A-Za-z '\-/&.]*", t))
+
+
+def _points_from_pairs(pairs: dict) -> str | None:
+    for key, val in (pairs or {}).items():
+        k = str(key).strip().lower().rstrip(":")
+        if "criminal point" in k or k in ("points", "criminal points"):
+            cand = _clean(str(val))
+            if cand and re.fullmatch(r"[0-9,]+", cand):
+                return cand
+    return None
+
 
 def parse_name_result(html: str, selectors: dict | None = None) -> dict:
     selectors = selectors or {}
@@ -205,6 +253,8 @@ def parse_name_result(html: str, selectors: dict | None = None) -> dict:
             holder = soup.select_one("#cautionCodes")
             if holder is not None:
                 for b in holder.select("span.badge, .badge"):
+                    if _in_picker(b):
+                        continue
                     a = b.find("a")
                     t = _clean(a.get_text(" ", strip=True) if a else b.get_text(" ", strip=True))
                     if t and len(re.sub(r"[^A-Za-z]", "", t)) >= 2 and t.lower() not in ("caution codes",):
@@ -218,19 +268,19 @@ def parse_name_result(html: str, selectors: dict | None = None) -> dict:
         if card is not None:
             try:
                 for b in card.select("span.badge, .badge, li"):
+                    if _in_picker(b):
+                        continue
                     t = _clean(b.get_text(" ", strip=True))
                     if t and len(re.sub(r"[^A-Za-z]", "", t)) >= 3 and t.lower() not in ("caution codes",):
                         caution_codes.append(t)
             except Exception:
                 pass
-    # Fallback: scan visible text for known caution-code labels.
-    if not caution_codes:
-        low = (text or "").lower()
-        for lbl in _CAUTION_KNOWN:
-            if lbl in low:
-                caution_codes.append(lbl.title())
+    # There is deliberately no page-text fallback here: the MDC renders the
+    # whole caution-code list on every profile, so scanning the text marked
+    # clean subjects with every flag that exists.
     seen = set()
     caution_codes = [c for c in caution_codes if not (c.lower() in seen or seen.add(c.lower()))]
+    caution_codes = [c for c in caution_codes if _looks_like_caution(c)][:6]
 
     # separately so we don't mislabel a flagged-but-not-wanted subject.
     has_warrants = True if wanted else (False if (name or pairs or caution_codes) else None)
@@ -246,11 +296,7 @@ def parse_name_result(html: str, selectors: dict | None = None) -> dict:
                         criminal_points = _clean(val.get_text(" ", strip=True))
                     break
             if criminal_points is None:
-                v = soup.select_one("h5.characterDetailsValue, .characterDetailsValue")
-                if v is not None:
-                    cand = _clean(v.get_text(" ", strip=True))
-                    if cand and re.fullmatch(r"[0-9,]+", cand):
-                        criminal_points = cand
+                criminal_points = _points_from_pairs(pairs)
         except Exception:
             pass
 
