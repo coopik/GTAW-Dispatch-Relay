@@ -23,7 +23,10 @@ try:
 except Exception:
     usage = None
 
-APP_VERSION = "1.5.4"
+try:
+    from modules.app_paths import APP_VERSION
+except Exception:
+    APP_VERSION = "1.5.6"
 
 PALETTE = {
     "page": ("#f4f6fb", "#070b14"),
@@ -95,12 +98,18 @@ SETTINGS_SCHEMA = [
     ("Chat log input", "scan", [
         {"kind": "action_input", "label": "Chat log file"},
         {"path": ["input_source", "path"], "label": "File path", "kind": "text",
-         "hint": r"Full path to the RAGE MP .storage file, e.g. "
-                 r"C:\RAGEMP\client_resources\<hash>\.storage  "
+         "hint": r"Full path to the chat log. FiveM: the Chat Log Assistant's "
+                 r"%LOCALAPPDATA%\GTAW-Log-Parser-FiveM\current-session.txt  "
                  "Leave blank to auto-detect it."},
+        {"path": ["input_source", "source"], "label": "Game / log type", "kind": "text",
+         "hint": "auto (recommended) = look for the FiveM Chat Log Assistant file first, "
+                 "then a RAGE MP .storage file. Force it with fivem or ragemp."},
+        {"path": ["input_source", "capture"], "label": "Read FiveM directly", "kind": "text",
+         "hint": "auto (recommended) = read the chat straight out of the running game, so no "
+                 "other software is needed. Set to off to only read a log file."},
         {"path": ["input_source", "auto_detect"], "label": "Auto-detect the file on start", "kind": "bool",
-         "hint": "Searches your RAGE MP install for the GTA World .storage file. "
-                 "A path set above always wins."},
+         "hint": "Looks for the FiveM Chat Log Assistant session file first, then a "
+                 "RAGE MP .storage file. A path set above always wins."},
         {"path": ["input_source", "use_watchdog"], "label": "Instant file notifications", "kind": "bool",
          "hint": "Reacts the moment the game writes the file. Turn off to use plain "
                  "polling only (slightly slower, but bulletproof)."},
@@ -150,6 +159,10 @@ SETTINGS_SCHEMA = [
         {"path": ["flagging", "dedup_history"], "label": "De-dup memory (lines)", "kind": "int"},
         {"path": ["flagging", "call_block", "enabled"], "label": "Parse MDC / 911 call cards", "kind": "bool"},
         {"path": ["flagging", "radio_traffic"], "label": "Read unit radio traffic (base channel)", "kind": "bool"},
+        {"path": ["flagging", "ignore_channels"], "label": "Channels to ignore", "kind": "list",
+         "hint": "Never flagged, whatever they say - PMs, OOC, /me, /do, local speech. "
+                 "Channels not listed here are still read, so a missing name can never silence "
+                 "the app. Clear the list to flag every channel."},
         {"path": ["flagging", "skip_own_names"], "label": "Skip your own characters", "kind": "list",
          "hint": "Comma-separated character names, e.g. Connor Myer. When the AI sees \"<name> "
                  "says:\" in chat or radio, that line is ignored - so requesting an additional "
@@ -233,7 +246,8 @@ SETTINGS_SCHEMA = [
      False),
     ("Your call signs", "shield", [
         {"path": ["location", "callsigns"], "label": "Your call signs", "kind": "list",
-         "hint": "Comma-separated, e.g. 2XL13, 2Adam55. Spoken with the police phonetic alphabet."},
+         "hint": "Comma-separated, e.g. 25T15, 2Adam55. Spoken with the police phonetic alphabet. "
+                 "Leave EMPTY to answer every unit; fill it in to answer only yours."},
     ], "Tells the app which units are yours. Everything set to \u201cown\u201d - CAD updates, code six, "
        "code seven, clearing and MDC lookups - only answers these call signs, and they are read "
        "back using the police phonetic alphabet."),
@@ -509,7 +523,7 @@ class DispatchApp(ctk.CTk):
         cc.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(cc, text="Chat log input", font=self.f_h,
                      text_color=PALETTE["text"]).grid(row=0, column=0, sticky="w", padx=22, pady=(16, 2))
-        ctk.CTkLabel(cc, text="Reads the .storage file your RAGE MP client writes the game chat to.",
+        ctk.CTkLabel(cc, text="Reads FiveM's chat directly while you play. No other software needed.",
                      font=self.f_s, text_color=PALETTE["muted"]).grid(
             row=1, column=0, sticky="w", padx=22, pady=(0, 6))
         self._target_lbl = ctk.CTkLabel(cc, text="", font=self.f_mono,
@@ -538,6 +552,13 @@ class DispatchApp(ctk.CTk):
                                           image=self._icon("scan", 16, IC_DARK), compound="left",
                                           command=self._toggle_preview)
         self._preview_btn.grid(row=0, column=3, padx=4)
+        self._clear_chat_btn = ctk.CTkButton(row, text="  Clear Log", width=130, height=40,
+                                             corner_radius=10, font=self.f_bb,
+                                             fg_color=PALETTE["neutral"], text_color=PALETTE["text"],
+                                             hover_color=PALETTE["neutral_hover"],
+                                             image=self._icon("reload", 16, IC_DARK),
+                                             compound="left", command=self._do_clear_chat)
+        self._clear_chat_btn.grid(row=0, column=4, padx=4)
         self._preview_box = ctk.CTkTextbox(cc, height=150, font=self.f_mono, corner_radius=10,
                                           fg_color=PALETTE["card_alt"], text_color=PALETTE["text"],
                                           border_width=0, wrap="none")
@@ -1262,10 +1283,13 @@ class DispatchApp(ctk.CTk):
             row=1, column=0, sticky="w", padx=26, pady=(0, 8))
         steps = [
             ("target", "1. Point it at your chat log",
-             "Go to the Dashboard and press Detect file. The app finds the .storage file your "
-             "RAGE MP client writes the game chat to (usually "
-             r"C:\RAGEMP\client_resources\<hash>\.storage). If it can't find it, press "
-             "Browse... and pick the file yourself. That one file is all the app ever reads."),
+             "Nothing to set up. FiveM does not save the chat anywhere, so the app reads it "
+             "straight out of the running game over FiveM's own local debug port - read-only, "
+             "localhost only - and keeps a copy at "
+             r"%APPDATA%\911 Dispatch Relay\live-session.txt. Just start FiveM and press "
+             "Start. If live capture ever stops working, run the GTA World Chat Log Assistant "
+             "and press Detect file, and the app reads its log instead. RAGE MP .storage files "
+             "still work too."),
             ("mic", "2. Set up your voice",
              "Open Settings > Voice (TTS). Keep ElevenLabs for the best quality and paste your API "
              "key and voice ID, or switch the provider to a free offline voice. Use Test Voice on "
@@ -1322,8 +1346,8 @@ class DispatchApp(ctk.CTk):
         card.grid_columnconfigure(0, weight=1)
         text = (
             "911 Dispatch Relay is a personal, local tool for GTA World roleplay.\n\n"
-            "It reads the chat log your own RAGE MP client already writes to disk (the\n"
-            ".storage file), detects 911 chat lines and 911 / 311 call cards, rewrites\n"
+            "It reads the FiveM chat log written by the GTA World Chat Log Assistant\n"
+            "(current-session.txt), detects 911 chat lines and 911 / 311 call cards, rewrites\n"
             "them into a realistic LAPD radio call-out using the San Andreas Penal Code,\n"
             "adds a radio effect, and plays the audio through your own speakers only.\n\n"
             "It can optionally track where your unit is from your own radio traffic and,\n"
@@ -1374,7 +1398,7 @@ class DispatchApp(ctk.CTk):
         ctk.CTkLabel(support, text="  Found a bug?", font=self.f_h, text_color=PALETTE["text"],
                      image=self._icon("info", 18, IC_PRIMARY), compound="left").grid(
             row=0, column=0, sticky="w", padx=22, pady=(18, 2))
-        ctk.CTkLabel(support, text="DM me on Discord:  _coopik_", font=self.f_bb,
+        ctk.CTkLabel(support, text="DM me on Discord:  _covxx_", font=self.f_bb,
                      text_color=PALETTE["primary"]).grid(row=1, column=0, sticky="w", padx=22, pady=(0, 4))
         ctk.CTkLabel(support, text="Please include what you were doing and a screenshot if you can.",
                      font=self.f_s, text_color=PALETTE["muted"]).grid(row=2, column=0, sticky="w", padx=22, pady=(0, 18))
@@ -1681,9 +1705,10 @@ class DispatchApp(ctk.CTk):
             initial = ""
         path = filedialog.askopenfilename(
             parent=self,
-            title="Select your RAGE MP .storage chat log file",
+            title="Select your chat log file (FiveM current-session.txt or RAGE MP .storage)",
             initialdir=initial or None,
-            filetypes=[("RAGE MP storage", ".storage"), ("All files", "*.*")],
+            filetypes=[("Chat logs", "*.txt *.log"), ("RAGE MP storage", ".storage"),
+                       ("All files", "*.*")],
         )
         if not path:
             return
@@ -1837,6 +1862,15 @@ class DispatchApp(ctk.CTk):
             pass
         self._recent_sig = None
         self._render_recent()
+
+    def _do_clear_chat(self):
+        """Empty the chat view and start the session log over."""
+        try:
+            self.relay.clear_chat_log()
+        except Exception:
+            pass
+        self._preview_sig = None
+        self._render_preview(force=True)
 
     def _toggle_preview(self):
         self._preview_on = not getattr(self, "_preview_on", False)

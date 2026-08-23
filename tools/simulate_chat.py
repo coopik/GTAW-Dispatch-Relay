@@ -68,6 +68,14 @@ def write_storage(path, lines, keep):
         json.dump(payload, fh)
 
 
+def write_session(path, lines, keep):
+    """Write the FiveM Chat Log Assistant's plain text session file."""
+    with io.open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("\n".join(lines[-keep:]))
+        if lines:
+            fh.write("\n")
+
+
 def events_from_file(path):
     from modules.file_watcher import read_chat_lines
 
@@ -83,6 +91,12 @@ def main():
     ap = argparse.ArgumentParser(description="Simulate GTA World chat for testing.")
     ap.add_argument("--out", default=os.path.join(os.path.abspath("sim_client_resources"), ".storage"),
                     help="where to write the fake .storage file")
+    ap.add_argument("--fivem", action="store_true",
+                    help="write a FiveM Chat Log Assistant session file (plain text) "
+                         "instead of a RAGE MP .storage file")
+    ap.add_argument("--live", action="store_true",
+                    help="with --fivem, write to the real "
+                         "%LOCALAPPDATA%\\GTAW-Log-Parser-FiveM\\current-session.txt path")
     ap.add_argument("--interval", type=float, default=6.0, help="seconds between events")
     ap.add_argument("--keep", type=int, default=120, help="lines of history to keep (the game trims too)")
     ap.add_argument("--once", action="store_true", help="write everything at once, then exit")
@@ -113,11 +127,19 @@ def main():
                 print(" ", line)
         return 0
 
+    writer = write_session if args.fivem else write_storage
+    if args.fivem and args.out == ap.get_default("out"):
+        if args.live:
+            from modules.file_watcher import expected_fivem_path
+            args.out = expected_fivem_path()
+        else:
+            args.out = os.path.join(os.path.abspath("sim_fivem"), "current-session.txt")
+
     path = os.path.abspath(args.out)
     os.makedirs(os.path.dirname(path), exist_ok=True)
 
     lines = []
-    write_storage(path, lines, args.keep)
+    writer(path, lines, args.keep)
 
     print()
     print("Fake chat log ready:")
@@ -141,7 +163,7 @@ def main():
             block = ev if isinstance(ev, list) else [ev]
             for line in block:
                 lines.append(stamp(line))
-            write_storage(path, lines, args.keep)
+            writer(path, lines, args.keep)
             for line in block:
                 print("  wrote:", line[:100])
             if not args.once:

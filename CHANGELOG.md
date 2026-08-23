@@ -6,6 +6,59 @@
 > only be misleading, so they have been removed entirely. 1.4.0 is the first release of the
 > rebuilt app.
 
+## 1.5.6
+
+- **Only radio traffic is flagged now.** A PM to yourself saying "25T15, clear."
+  was being answered as if it went out over the air. Detectors read the raw text
+  and never checked which channel it came from, so PMs, OOC, /me, /do and local
+  speech could all set dispatch off. Every line is now matched to its channel -
+  in the live capture format and the log file format - and anything on an ignored
+  channel is dropped before a single detector runs.
+- Channels to ignore are editable in Settings (PMs, OOC, /me, /do, local, whisper,
+  shout, low, megaphone and phone by default). A channel that is not on the list is
+  still read, so an unfamiliar channel name can never silence the app.
+- "Connor Myer says [radio]: ..." is recognised as radio even without the
+  [S: 1 | CH: BASE] prefix.
+
+## 1.5.5
+
+**Fixed: the app could look alive but never answer anything.**
+
+- With no call signs set in Settings, every "own" flag - clearing, code six, CAD
+  updates, code seven, OPG, end of watch, out status - was quietly dropped, so
+  nothing was ever read out. Blank now means "answer every unit", and the log
+  says so on Start. Fill in Settings > Your call signs to answer only yours.
+- Live capture: FiveM's debug socket allows one client at a time, so a 500 on
+  connect now says plainly that another chat tool (usually the GTAW Log Parser)
+  is attached, instead of showing a raw error.
+- Live capture: stale chat targets no longer abort the attach - every candidate
+  is tried before giving up.
+- Live capture: closing FiveM used to raise "Runtime.evaluate failed:" and
+  "Page.getFrameTree failed:". Shutting the game down is now recognised as what
+  it is and logged once as "FiveM closed."
+- No more blank error messages, and capture status no longer triggers the
+  automatic bug reporter.
+- New **Clear Log** button beside Show Chat: empties the chat view and starts the
+  session log fresh.
+
+### FiveM support (also in 1.5.5)
+
+**GTA World moved to FiveM, so the chat input moved with it.**
+
+- FiveM does not save the chat to disk at all - it lives in the game's local NUI
+  page. The app now reads the plain text session file written by the GTA World
+  Chat Log Assistant (GTAW Log Parser):
+  `%LOCALAPPDATA%\GTAW-Log-Parser-FiveM\current-session.txt`.
+- Auto-detect looks for that file first and falls back to a RAGE MP `.storage`
+  file, so old setups keep working. `input_source.source` forces one or the
+  other (`auto` | `fivem` | `ragemp`).
+- The reader now picks the format per file: JSON `.storage` or plain text.
+- The assistant empties its session file every time FiveM starts a new session.
+  The watcher detects the shrink and resyncs, instead of either replaying the
+  whole backlog or going silent for the rest of the session.
+- `tools/simulate_chat.py --fivem` writes a fake session file so the whole
+  pipeline can be tested without being in game. `--live` targets the real path.
+
 ## v1.5.4
 
 - Offline testing: `tools/test_flag.py` now reads your call signs the same way the app does (they were always blank before), takes `--config PATH` / `--config appdata`, prints which config file it loaded, explains why a line was not flagged, and can speak the reply out loud with `--speak`. `tools/test_mdc.py` gained `--speak` too.

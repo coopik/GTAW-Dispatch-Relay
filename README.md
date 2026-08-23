@@ -1,8 +1,8 @@
 # 911 Dispatch Relay
 
-A local desktop tool for **GTA World (RAGE MP RP)**. It reads the chat log your own game client already writes to disk, picks out new **911 chat lines** and **in-game 911 / 311 call cards**, rewrites them into a realistic **LAPD radio dispatch** call-out, speaks it in a female voice with a **radio filter**, and plays it through **your own speakers/headset only**.
+A local desktop tool for **GTA World (FiveM RP)**. It reads the chat log written by the GTA World Chat Log Assistant, picks out new **911 chat lines** and **in-game 911 / 311 call cards**, rewrites them into a realistic **LAPD radio dispatch** call-out, speaks it in a female voice with a **radio filter**, and plays it through **your own speakers/headset only**.
 
-It reads **one local file, read-only** - the RAGE MP client's own `.storage` chat log, which the game writes by itself. It does **not** touch the game process, memory, or network, it never writes to that file, and it never broadcasts audio to other players.
+It reads **one local file, read-only** - the `current-session.txt` chat log written by the GTA World Chat Log Assistant while you play. It does **not** touch the game process, memory, or network, it never writes to that file, and it never broadcasts audio to other players.
 
 ---
 
@@ -28,7 +28,7 @@ Prefer to run or modify the source code instead? Follow the developer setup in s
 
 ## What it does (pipeline)
 
-1. **Watch** the RAGE MP `.storage` chat log for new lines - instant file notifications, with a polling safety net.
+1. **Watch** the FiveM chat log for new lines - instant file notifications, with a polling safety net.
 2. **Parse** each line into a clean message: sender, call sign, channel (radio / local / OOC / PM / HQ / dispatch) and the exact text. Multi-line 911 call cards are assembled into one message.
 3. **Flag** relevant lines: chat patterns (`911`, `*dials 911*`, `[EMS]`, `[PD]`) and structured **call blocks** (Call ID / Situation / Location / Number).
 4. **Rewrite** the flagged text into an LAPD dispatch call-out (offline generator, or an LLM API if you add a key).
@@ -72,33 +72,58 @@ This installs the file watcher, the audio stack, and (on Windows) `pywin32` for 
 
 ## 3. Point it at your chat log
 
-RAGE MP saves your in-game chat into a local file named `.storage` (the client's own storage
-file). That single file is the app's only input:
+**FiveM does not save your chat anywhere.** Unlike RAGE MP, there is no storage file to read - the
+chat lives inside the game's local NUI page and is gone the moment the frame is redrawn.
+
+**So the app reads it out of the running game itself, and you do not have to install anything.**
+FiveM's chat is a small local web page, and FiveM exposes a debug port for it on `127.0.0.1` that
+only programs on your own machine can reach. The app connects to that port, creates a private
+sandbox inside the chat frame, and asks it what is currently on screen twice a second. It is
+read-only and local: nothing is written to the game, no memory is touched, no keystrokes are sent,
+and nothing leaves your PC. Every line it sees is saved to:
 
 ```
-<RAGEMP install>\client_resources\<32-character hash>\.storage
+%APPDATA%\911 Dispatch Relay\live-session.txt
+```
+
+Just start FiveM and press **Start** - the Dashboard will say *reading FiveM directly*. Only one
+program at a time may attach to FiveM's chat, so close the GTAW Log Parser if it is running.
+
+Two things this cannot do: it only sees chat that is **currently visible** in the chat box, so an
+extreme flood can scroll lines away before the next read, and it depends on GTA World's HUD markup,
+so a redesign on their side can break it until the app is updated.
+
+**If live capture is unavailable**, the app falls back to the file written by the **GTA World Chat
+Log Assistant** (GTAW Log Parser) - the community tool many people already run. Set
+`input_source.capture: off` to skip live capture entirely and only read a log file:
+
+```
+%LOCALAPPDATA%\GTAW-Log-Parser-FiveM\current-session.txt
 ```
 
 For example:
 
 ```
-C:\RAGEMP\client_resources\cb242ee11d52ccd84309050503ab5242\.storage
+C:\Users\<you>\AppData\Local\GTAW-Log-Parser-FiveM\current-session.txt
 ```
 
-The folder name is a hash of the server address, so it is different for every person and every
-server - don't copy someone else's path.
+1. **Run the Chat Log Assistant whenever you play.** No assistant running means no chat log, and
+   nothing for this app to read.
+2. Start the app and press **Detect file** on the Dashboard. It finds that file automatically.
+3. If that fails, press **Browse...** and pick the file yourself.
+4. The chosen path is saved to `config.yaml` under `input_source.path`.
 
-1. Start the app and press **Detect file** on the Dashboard. It searches your RAGE MP install and
-   picks the `.storage` file whose `server_version` is **GTA World**.
-2. If that fails, press **Browse...** and pick the file yourself.
-3. The chosen path is saved to `config.yaml` under `input_source.path`.
+> **Play for a moment before detecting.** The file only exists once the assistant has captured its
+> first line.
 
-> **Log in to GTA World at least once before detecting.** The file only exists once the client has
-> written its storage. If you play on several RAGE MP servers, the newest matching file wins.
+> **Old RAGE MP setups still work.** `input_source.source: auto` looks for the FiveM file first and
+> falls back to a RAGE MP `.storage` file, and the reader handles either format. Force one with
+> `fivem` or `ragemp`.
 
-> How it reads: RAGE MP rewrites the whole file instead of appending to it, and trims old chat, so
-> the app compares successive snapshots to work out what is new. Only new chat is ever announced,
-> and the file is opened read-only.
+> How it reads: the app compares successive snapshots of the file to work out what is new, so only
+> new chat is ever announced and the file is opened read-only. The assistant **empties** its session
+> file every time FiveM starts a new session - the app detects that and resyncs, instead of
+> replaying the whole backlog at you.
 
 ---
 
@@ -193,7 +218,7 @@ Headless mode: `py main.py --cli`. Locate the chat log and exit: `py main.py --d
 
 ## 8. What it watches
 
-Everything comes from the one `.storage` file in section 3. There is **nothing to calibrate** - no
+Everything comes from the one chat log file in section 3. There is **nothing to calibrate** - no
 region to drag, no window to pick. The game can be full-screen, minimized, or on another monitor;
 it makes no difference, because nothing is read from the screen.
 
@@ -223,14 +248,14 @@ signs and plates are never misread.
 You do not need to be in game, in a server, or even online to test the app. There
 are four ways to drive it, easiest first.
 
-**a) The chat simulator (no game, no server).** `tools\simulate_chat.py` writes a
-fake `.storage` file and feeds realistic chat into it on a timer, exactly the way
-the game client does - radio traffic, local chat, panic calls and full emergency
+**a) The chat simulator (no game, no server).** `tools\simulate_chat.py --fivem` writes a
+fake `current-session.txt` and feeds realistic chat into it on a timer, exactly the way
+the Chat Log Assistant does - radio traffic, local chat, panic calls and full emergency
 call cards:
 
 ```
 cd "C:\path\to\911 Dispatch Relay"
-py tools\simulate_chat.py --interval 4
+py tools\simulate_chat.py --fivem --interval 4
 ```
 
 It prints the path of the fake file. Paste that into **Settings > Chat log input >
@@ -241,19 +266,19 @@ it all at once), `--list` (just print the scenario). By default it loops until y
 Ctrl+C, which is what you want: the app deliberately ignores whatever was already in the
 file when you pressed Start, so chat has to keep arriving while it is listening.
 
-**b) Replay your own real chat log.** The `.storage` file survives after you quit
-the game, so yesterday's chat is still sitting on disk. Replay it line by line as
+**b) Replay your own real chat log.** `current-session.txt` survives after you quit
+the game, so this session's chat is still sitting on disk. Replay it line by line as
 if it were happening live:
 
 ```
-py tools\simulate_chat.py --from-file "C:\RAGEMP\client_resources\<hash>\.storage"
+py tools\simulate_chat.py --fivem --from-file "$env:LOCALAPPDATA\GTAW-Log-Parser-FiveM\current-session.txt"
 ```
 
 This only ever reads your real file; the simulated copy is written elsewhere. This
 is the most realistic test there is, because it is your actual radio channel, your
 actual call signs and your actual calls.
 
-**c) `replay_last` against the real file.** Point the app at your real `.storage`
+**c) `replay_last` against the real file.** Point the app at your real chat log
 and set `input_source.replay_last: 20` in `config.yaml`. On Start it processes the
 last 20 lines already in the file instead of ignoring the backlog. Set it back to
 `0` for normal use, or you will re-hear old traffic every time you press Start.
@@ -262,9 +287,9 @@ last 20 lines already in the file instead of ignoring the backlog. Set it back t
 through the flagger and prints what would have been flagged. Fastest way to test
 your call signs and patterns without spending TTS credits.
 
-To test **auto-detection** itself against a fake folder, set the `RAGEMP_ROOT`
-environment variable to a folder containing `client_resources\<anything>\.storage`
-and press **Detect log**.
+To test **auto-detection** itself, point the `GTAW_FIVEM_LOG` environment variable
+at any file and press **Detect file** - it is checked before the real location.
+(The old RAGE MP `RAGEMP_ROOT` override still works too.)
 
 ## 9. What gets read
 
@@ -294,7 +319,11 @@ Rules applied to call cards:
 
 ## 10. Configuration reference (`config.yaml`)
 
-- **input_source.path**: full path to the RAGE MP `.storage` chat log. Blank = auto-detect.
+- **flagging.ignore_channels**: channels never treated as radio (PMs, OOC, /me, /do, local).
+- **input_source.capture**: `auto` reads FiveM directly; `off` only reads a log file.
+- **input_source.capture_poll**: seconds between reads of the in-game chat box (default `0.5`).
+- **input_source.source**: `auto` (FiveM first, then RAGE MP), or force `fivem` / `ragemp`.
+- **input_source.path**: full path to the chat log. Blank = auto-detect.
 - **input_source.auto_detect** / **server_fingerprint**: find the file automatically, matching the server name (`GTA World`).
 - **input_source.use_watchdog**: instant file-change notifications; `false` = polling only.
 - **input_source.poll_interval** / **debounce_ms**: safety-net re-check interval, and how long to wait after a change before reading so a half-written file is never parsed.
@@ -317,7 +346,7 @@ Rules applied to call cards:
 
 - **`No chat log file set`** - press **Detect file** on the Dashboard, or set `input_source.path` by hand (section 3).
 - **Nothing is ever read** - the path is wrong, or the client hasn't written its storage yet. Log in to GTA World once, then press **Detect file** again. **Show Chat** tells you whether lines are arriving.
-- **Chat arrives late** - RAGE MP flushes the file on its own schedule. Lowering `input_source.debounce_ms` / `poll_interval` helps a little, but the flush interval is set by the game, not the app.
+- **Chat arrives late** - the Chat Log Assistant polls the game about twice a second and flushes on its own schedule. Lowering `input_source.debounce_ms` / `poll_interval` helps a little, but the flush interval is set by the game, not the app.
 - **`ModuleNotFoundError: pyaudioop` / `audioop`** - run `py -m pip install -r requirements.txt` (installs `audioop-lts` on Python 3.13+).
 - **`402 Payment Required` (ElevenLabs)** - free plan; use your own cloned voice ID, or switch `tts.provider` to `edge`.
 - **`[WinError 2]`** - ffmpeg missing; `imageio-ffmpeg` should cover it, otherwise install ffmpeg and add to PATH.
@@ -365,7 +394,8 @@ pywin32 is entirely optional - without it you only lose the tray icon and the â€
     dispatch_alert.wav  alert tone played before each dispatch
   modules/
     gui_app.py          modern CustomTkinter UI (Dashboard / Settings / Report a bug / About)
-    file_watcher.py     watches the RAGE MP .storage chat log and parses it into messages
+    nui_capture.py      reads FiveM's chat live out of the running game (local debug port)
+    file_watcher.py     watches the FiveM (or RAGE MP) chat log and parses it into messages
     displays.py         monitor enumeration for window placement
     flagger.py          chat + call-card detection and dedup
     llm.py              LAPD dispatch rewriting (offline + API)
@@ -493,11 +523,11 @@ see immediately if a caution flag or a points value was misread.
 **3. Play a whole fake shift into the app**
 
 ```
-py tools\simulate_chat.py
-py tools\simulate_chat.py --say "25T15, code ten on Joseph Panicucci."
+py tools\simulate_chat.py --fivem
+py tools\simulate_chat.py --fivem --say "25T15, code ten on Joseph Panicucci."
 ```
 
-It writes a fake `.storage` file and prints its path. In Settings, set the
+It writes a fake `current-session.txt` and prints its path. In Settings, set the
 chat log input to that path, turn auto-detect off, Save, then Start. The app
 only reacts to lines written after you press Start.
 

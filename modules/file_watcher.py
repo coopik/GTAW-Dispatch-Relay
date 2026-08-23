@@ -14,6 +14,22 @@ CHAT_LOG_KEY = "chat_log"
 SERVER_FINGERPRINT = "GTA World"
 STORAGE_FILENAME = ".storage"
 
+# --- FiveM -------------------------------------------------------------------
+# GTA World moved from RAGE MP to FiveM. FiveM does NOT store the chat anywhere
+# on disk - the chat lives in the game's local NUI page and is gone the moment
+# the frame is redrawn. The community tool everyone uses (the GTAW Log Parser /
+# "Chat Log Assistant") scrapes that NUI over FiveM's local DevTools port and
+# appends every line it sees to a plain text file. That file is our FiveM input:
+#
+#   %LOCALAPPDATA%\GTAW-Log-Parser-FiveM\current-session.txt
+#
+# UTF-8, one chat message per line as "[HH:mm:ss] text", with an occasional
+# "[DATE: ... | TIME: ...]" header. The assistant EMPTIES it every time FiveM
+# starts a new session - the watcher detects that and resyncs instead of
+# replaying the whole file.
+FIVEM_APP_DIRNAME = "GTAW-Log-Parser-FiveM"
+FIVEM_SESSION_FILENAME = "current-session.txt"
+
 
 TS_RE = re.compile(r"^\[(\d{2}:\d{2}:\d{2})\]\s*")
 DATE_HEADER_RE = re.compile(r"^\[DATE:\s*(.+?)\s*\|\s*TIME:\s*(.+?)\]\s*$", re.I)
@@ -270,6 +286,79 @@ def autodetect_storage_path(fingerprint: str = SERVER_FINGERPRINT) -> str:
     return scored[0][1]
 
 
+def fivem_candidates() -> list:
+    """Everywhere the FiveM Chat Log Assistant might keep its session file."""
+    out = []
+    env = os.environ.get("GTAW_FIVEM_LOG")
+    if env:
+        out.append(env)
+    bases = []
+    for var in ("LOCALAPPDATA", "APPDATA"):
+        val = os.environ.get(var)
+        if val:
+            bases.append(val)
+    home = os.path.expanduser("~")
+    bases.append(os.path.join(home, "AppData", "Local"))
+    bases.append(os.path.join(home, "AppData", "Roaming"))
+    bases.append(home)
+    for base in bases:
+        out.append(os.path.join(base, FIVEM_APP_DIRNAME, FIVEM_SESSION_FILENAME))
+        out.append(os.path.join(base, FIVEM_APP_DIRNAME, "logs", FIVEM_SESSION_FILENAME))
+    seen, uniq = set(), []
+    for p in out:
+        key = os.path.normcase(os.path.abspath(p))
+        if key not in seen:
+            seen.add(key)
+            uniq.append(p)
+    return uniq
+
+
+def autodetect_fivem_path() -> str:
+    """Newest existing Chat Log Assistant session file, or ""."""
+    best, best_mtime = "", -1.0
+    for path in fivem_candidates():
+        try:
+            if not os.path.isfile(path):
+                continue
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        if mtime > best_mtime:
+            best, best_mtime = path, mtime
+    return best
+
+
+def expected_fivem_path() -> str:
+    """Where the assistant WILL write, even if it has not run yet."""
+    env = os.environ.get("GTAW_FIVEM_LOG")
+    if env:
+        return env
+    base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+    return os.path.join(base, FIVEM_APP_DIRNAME, FIVEM_SESSION_FILENAME)
+
+
+def autodetect_chat_path(fingerprint: str = SERVER_FINGERPRINT, source: str = "auto") -> str:
+    """FiveM first (GTA World lives there now), RAGE MP as a fallback."""
+    src = str(source or "auto").strip().lower()
+    if src == "fivem":
+        return autodetect_fivem_path()
+    if src in ("ragemp", "rage", "storage"):
+        return autodetect_storage_path(fingerprint)
+    return autodetect_fivem_path() or autodetect_storage_path(fingerprint)
+
+
+def looks_like_storage(path: str) -> bool:
+    """True for a RAGE MP JSON .storage file, False for a plain text log."""
+    if os.path.basename(path or "").lower() == STORAGE_FILENAME:
+        return True
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            head = fh.read(64).lstrip()
+    except OSError:
+        return False
+    return head.startswith("{")
+
+
 def strip_timestamps(lines):
     out = []
     for line in lines:
@@ -282,8 +371,9 @@ class StorageReadError(Exception):
     pass
 
 
-def read_chat_lines(path: str, encoding: str = "utf-8", attempts: int = 5,
-                    delay: float = 0.15) -> list:
+def read_storage_lines(path: str, encoding: str = "utf-8", attempts: int = 5,
+                       delay: float = 0.15) -> list:
+    """RAGE MP: the chat is a JSON string under the "chat_log" key."""
     last_err = None
     for attempt in range(max(1, int(attempts))):
         try:
@@ -303,6 +393,30 @@ def read_chat_lines(path: str, encoding: str = "utf-8", attempts: int = 5,
             if attempt + 1 < max(1, int(attempts)):
                 time.sleep(max(0.0, float(delay)))
     raise StorageReadError(str(last_err) if last_err else "unknown read error")
+
+
+def read_session_lines(path: str, encoding: str = "utf-8", attempts: int = 5,
+                       delay: float = 0.15) -> list:
+    """FiveM: the Chat Log Assistant session file is plain text, one line each."""
+    last_err = None
+    for attempt in range(max(1, int(attempts))):
+        try:
+            with open(path, "r", encoding=encoding, errors="replace") as fh:
+                text = fh.read()
+            return [ln.rstrip("\r") for ln in text.split("\n") if ln.strip()]
+        except (OSError, PermissionError, ValueError) as exc:
+            last_err = exc
+            if attempt + 1 < max(1, int(attempts)):
+                time.sleep(max(0.0, float(delay)))
+    raise StorageReadError(str(last_err) if last_err else "unknown read error")
+
+
+def read_chat_lines(path: str, encoding: str = "utf-8", attempts: int = 5,
+                    delay: float = 0.15) -> list:
+    """Read whichever kind of chat log this is - FiveM text or RAGE MP JSON."""
+    if looks_like_storage(path):
+        return read_storage_lines(path, encoding=encoding, attempts=attempts, delay=delay)
+    return read_session_lines(path, encoding=encoding, attempts=attempts, delay=delay)
 
 
 def _rfind_block(haystack: list, needle: list) -> int:
@@ -335,6 +449,12 @@ class ChatLogDiffer:
             return []
         if snapshot == prev:
             return []
+        if not prev:
+            # The baseline was an empty file. FiveM's Chat Log Assistant creates
+            # and empties its session file at the start of every session, so
+            # everything here is genuinely new chat - not a backlog to skip.
+            self._prev = list(snapshot)
+            return list(snapshot)
         tried = set()
         for size in self.ANCHOR_SIZES:
             k = min(size, len(prev))
@@ -404,6 +524,7 @@ class FileWatcher:
         _uw = cfg.get("use_watchdog", True)
         self.use_watchdog = True if _uw is None else bool(_uw)
         self.fingerprint = str(cfg.get("server_fingerprint") or SERVER_FINGERPRINT)
+        self.source = str(cfg.get("source") or "auto").strip().lower()
 
         self.resolved_path = ""
         self.last_error = ""
@@ -416,6 +537,7 @@ class FileWatcher:
         self._thread: threading.Thread | None = None
         self._observer = None
         self._last_sig = None
+        self._last_size = None
         self._err_logged = ""
 
     def _log(self, msg: str) -> None:
@@ -433,7 +555,7 @@ class FileWatcher:
         if self.path and not self.auto_detect:
             return self.path
         if self.auto_detect:
-            found = autodetect_storage_path(self.fingerprint)
+            found = autodetect_chat_path(self.fingerprint, self.source)
             if found:
                 return found
         return self.path
@@ -455,9 +577,11 @@ class FileWatcher:
         self.resolved_path = self.resolve_path()
         if not self.resolved_path:
             raise StorageReadError(
-                "Could not find a RAGE MP .storage file. Set the path in "
-                "Settings > Chat log input (usually "
-                r"C:\RAGEMP\client_resources\<hash>\.storage)."
+                "No chat log found. FiveM does not save the chat itself, so run "
+                "the GTA World Chat Log Assistant while you play - it writes "
+                + expected_fivem_path()
+                + ". Then press Detect file, or set the path in "
+                "Settings > Chat log input."
             )
         if not os.path.isfile(self.resolved_path):
             raise StorageReadError(f"Chat log file not found: {self.resolved_path}")
@@ -550,6 +674,13 @@ class FileWatcher:
         if not force and sig == self._last_sig:
             return
         self._last_sig = sig
+        size = sig[1]
+        if self._last_size is not None and size < self._last_size:
+            # The assistant empties the file when FiveM starts a new session.
+            # Resync instead of replaying the whole thing as "new" chat.
+            self._differ.reset()
+            self._log("Chat log was cleared (new FiveM session) - resyncing.")
+        self._last_size = size
         try:
             snapshot = read_chat_lines(
                 self.resolved_path,

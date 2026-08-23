@@ -6,6 +6,10 @@ import sys
 
 APP_NAME = "911 Dispatch Relay"
 
+# Single source of truth for the version. main.py and gui_app.py both read this,
+# and installer.iss must be bumped to match.
+APP_VERSION = "1.5.6"
+
 
 def is_frozen() -> bool:
     return bool(getattr(sys, "frozen", False))

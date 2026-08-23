@@ -18,10 +18,12 @@ from modules.hotkeys import HotkeyManager
 from modules.file_watcher import (
     FileWatcher,
     StorageReadError,
-    autodetect_storage_path,
+    autodetect_chat_path,
+    expected_fivem_path,
     parse_block,
     strip_timestamps,
 )
+from modules.nui_capture import CaptureEngine
 from modules.flagger import Flagger
 from modules.llm import LLMProcessor, spell_plates, strip_ten_codes
 from modules.player import AudioPlayer
@@ -30,7 +32,7 @@ from modules.reporter import Reporter
 from modules.mdc_lookup import MDCManager
 from modules.tts import TTSEngine
 
-APP_VERSION = "1.5.4"
+APP_VERSION = app_paths.APP_VERSION
 
 BUNDLE_DIR = app_paths.bundle_dir()
 DEFAULT_CONFIG_PATH = os.path.join(BUNDLE_DIR, "config.yaml")
@@ -193,6 +195,7 @@ class DispatchRelay:
 
         self.tts: TTSEngine | None = None
         self.watcher: FileWatcher | None = None
+        self.capture: CaptureEngine | None = None
 
         self._synth_q: "queue.Queue" = queue.Queue(maxsize=32)
         self._synth_thread = threading.Thread(target=self._synth_worker, daemon=True)
@@ -290,24 +293,100 @@ class DispatchRelay:
     def _fingerprint(self) -> str:
         return str(self._input_cfg().get("server_fingerprint") or "GTA World")
 
+    def _source(self) -> str:
+        return str(self._input_cfg().get("source") or "auto")
+
+    def _capture_mode(self) -> str:
+        return str(self._input_cfg().get("capture") or "auto").strip().lower()
+
+    def _capture_enabled(self) -> bool:
+        return self._capture_mode() not in ("off", "no", "false", "0")
+
+    def _start_capture(self) -> None:
+        """Read FiveM's chat straight out of the game, if we can."""
+        if not self._capture_enabled():
+            return
+        if self.capture is None:
+            try:
+                self.capture = CaptureEngine(
+                    self._input_cfg(),
+                    # Capture messages are status, not app crashes - keep them out
+                    # of the automatic bug reporter.
+                    log=lambda m: self._log(m, report=False),
+                )
+            except Exception as e:
+                self._log(f"Live capture unavailable: {e}", report=False)
+                self.capture = None
+                return
+        try:
+            self.capture.start()
+        except Exception as e:
+            self._log(f"Live capture could not start: {e}", report=False)
+
+    def _stop_capture(self) -> None:
+        if self.capture is not None:
+            try:
+                self.capture.stop()
+            except Exception:
+                pass
+
+    def clear_chat_log(self) -> str:
+        """Wipe the in-app chat view, and the session file when it is ours."""
+        try:
+            self.input_preview.clear()
+        except Exception:
+            pass
+        cap = self.capture
+        path = self.effective_chat_path()
+        ours = bool(cap and path
+                    and os.path.abspath(path) == os.path.abspath(cap.output_path))
+        if ours:
+            try:
+                with open(cap.output_path, "w", encoding="utf-8", newline="\n"):
+                    pass
+                cap.reset_baseline()
+            except OSError as e:
+                self._log(f"Could not clear the chat log: {e}")
+                return "error"
+            # The watcher sees the file shrink and resyncs on its own.
+            self._log("Chat log cleared - starting fresh.")
+            return "cleared"
+        self._log("Chat view cleared. The log file belongs to another app, so it "
+                  "was left alone.")
+        return "view"
+
+    def effective_chat_path(self) -> str:
+        """Live capture while the game is up, otherwise whatever log file we have."""
+        cap = self.capture
+        if cap is not None and self._capture_enabled():
+            if cap.attached:
+                return cap.output_path
+            fallback = self.chat_log_path()
+            if fallback and os.path.isfile(fallback):
+                return fallback
+            return cap.output_path if os.path.isfile(cap.output_path) else ""
+        return self.chat_log_path()
+
     def chat_log_path(self) -> str:
         cfg = self._input_cfg()
         path = str(cfg.get("path") or "").strip()
         if path and os.path.isfile(path):
             return path
         if cfg.get("auto_detect", True):
-            found = autodetect_storage_path(self._fingerprint())
+            found = autodetect_chat_path(self._fingerprint(), self._source())
             if found:
                 return found
         return path
 
     def detect_chat_log(self) -> str:
-        found = autodetect_storage_path(self._fingerprint())
+        found = autodetect_chat_path(self._fingerprint(), self._source())
         if not found:
             self._log(
-                "Could not find a RAGE MP .storage file automatically. Set the "
-                "path yourself in Settings > Chat log input - it looks like "
-                r"C:\RAGEMP\client_resources\<hash>\.storage"
+                "No chat log found. FiveM keeps no chat file of its own, so the "
+                "app reads the GTA World Chat Log Assistant's session file. Run "
+                "the assistant while FiveM is open - it writes "
+                + expected_fivem_path()
+                + " - then press Detect file again, or use Browse to pick it."
             )
             return ""
         self.set_chat_log_path(found)
@@ -319,24 +398,30 @@ class DispatchRelay:
         self._log(f"Chat log file set: {path}")
 
     def input_status_text(self) -> str:
+        cap = self.capture
+        if cap is not None and cap.attached:
+            return f"Live capture: reading FiveM directly - {cap.output_path}"
         path = self.chat_log_path()
         if not path:
+            if self._capture_enabled():
+                return "Chat: waiting for FiveM - live capture is on, no log file set"
             return "Chat log: not set - press Detect"
         if not os.path.isfile(path):
             return f"Chat log: MISSING - {path}"
         return f"Chat log: {path}"
 
     def _has_target(self) -> bool:
-        path = self.chat_log_path()
-        return bool(path) and os.path.isfile(path)
+        return bool(self.effective_chat_path())
 
     def start(self) -> None:
         if self._running.is_set():
             return
+        self._start_capture()
         if not self._has_target():
             self._log(
-                "No chat log file set. Press Detect on the Dashboard, or point "
-                "input_source.path at your RAGE MP .storage file."
+                "No chat source yet. Start FiveM and the app will read its chat "
+                "directly, or run the GTA World Chat Log Assistant and press "
+                "Detect file on the Dashboard."
             )
             return
         try:
@@ -347,6 +432,9 @@ class DispatchRelay:
         self._running.set()
         self._loop_thread = threading.Thread(target=self._loop, daemon=True)
         self._loop_thread.start()
+        if getattr(self.flagger, "callsigns_unset", False):
+            self._log("No call signs set, so every unit gets answered. Set "
+                      "Settings > Your call signs to answer only yours.")
         self._log("Started.")
 
     def stop(self) -> None:
@@ -354,6 +442,7 @@ class DispatchRelay:
             self._running.clear()
             self._drain_synth_queue()
             self.player.flush()
+            self._stop_capture()
             self._log("Stopping...")
 
     def _drain_synth_queue(self) -> None:
@@ -381,16 +470,40 @@ class DispatchRelay:
         self.player.stop()
 
     def _loop(self) -> None:
-        try:
-            watcher = FileWatcher(self._input_cfg(), log=self._log)
-            watcher.start()
-        except Exception as e:
-            self._log(f"Chat log error: {e}")
-            self._running.clear()
-            return
-        self.watcher = watcher
-        self._log(f"Watching chat log: {watcher.resolved_path}")
+        watcher = None
+        watched_path = ""
+        next_check = 0.0
         while self._running.is_set():
+            # The source can change under us: live capture takes over the moment
+            # FiveM appears, and hands back to the log file when it closes.
+            if time.time() >= next_check:
+                next_check = time.time() + 2.0
+                desired = self.effective_chat_path()
+                if desired and desired != watched_path:
+                    if watcher is not None:
+                        try:
+                            watcher.stop()
+                        except Exception:
+                            pass
+                        watcher = None
+                    cfg = self._input_cfg()
+                    cfg["path"] = desired
+                    cfg["auto_detect"] = False
+                    try:
+                        watcher = FileWatcher(cfg, log=self._log)
+                        watcher.start()
+                    except Exception as e:
+                        self._log(f"Chat log error: {e}")
+                        watcher = None
+                        watched_path = ""
+                        time.sleep(1.0)
+                        continue
+                    watched_path = desired
+                    self.watcher = watcher
+                    self._log(f"Watching chat log: {watcher.resolved_path}")
+            if watcher is None:
+                time.sleep(0.3)
+                continue
             try:
                 for frame in watcher.next_frames(timeout=0.4):
                     if not frame:
@@ -401,10 +514,11 @@ class DispatchRelay:
             except Exception as e:
                 self._log(f"Loop error: {e}")
                 time.sleep(0.5)
-        try:
-            watcher.stop()
-        except Exception:
-            pass
+        if watcher is not None:
+            try:
+                watcher.stop()
+            except Exception:
+                pass
         self.watcher = None
         self._log("Stopped.")
 
@@ -632,8 +746,9 @@ def run_cli(relay: DispatchRelay) -> None:
     if not relay._has_target():
         print("No chat log file set; trying to detect it...")
         if not relay.detect_chat_log():
-            print("Could not find the RAGE MP .storage file. "
-                  "Set input_source.path in config.yaml.")
+            print("Could not find a chat log. Run the GTA World Chat Log "
+                  "Assistant while FiveM is open, or set input_source.path "
+                  "in config.yaml.")
             return
     relay.start()
     if not relay.is_running():
@@ -757,7 +872,7 @@ def run_gui_legacy(relay: DispatchRelay) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="911 Dispatch Relay")
     parser.add_argument("--detect", action="store_true",
-                        help="Locate the RAGE MP .storage chat log, save it to the config, and exit")
+                        help="Locate the FiveM (or RAGE MP) chat log, save it to the config, and exit")
     parser.add_argument("--cli", action="store_true", help="Run headless (no GUI)")
     parser.add_argument("--config", default=CONFIG_PATH, help="Path to config.yaml")
     args = parser.parse_args()
@@ -767,7 +882,7 @@ def main() -> None:
 
     if args.detect:
         found = relay.detect_chat_log()
-        print(f"Chat log: {found}" if found else "No RAGE MP .storage file found.")
+        print(f"Chat log: {found}" if found else "No chat log found.")
         return
 
     mode = "cli" if args.cli else (cfg.get("ui") or {}).get("mode", "gui")

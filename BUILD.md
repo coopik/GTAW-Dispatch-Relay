@@ -32,12 +32,12 @@ It will:
 1. create an isolated build environment (`.buildenv\`),
 2. install the dependencies + PyInstaller,
 3. bundle everything into `dist\911 Dispatch Relay\`,
-4. if Inno Setup is installed, produce `installer_output\911DispatchRelay-Setup-1.0.0.exe`.
+4. if Inno Setup is installed, produce `installer_output\911DispatchRelay-Setup-1.5.6.exe`.
 
 **Outputs:**
 - **Standalone app:** `dist\911 Dispatch Relay\911 Dispatch Relay.exe` - copy this whole folder
   anywhere and run the `.exe`. No install needed.
-- **Installer:** `installer_output\911DispatchRelay-Setup-1.0.0.exe` - hand this single file to
+- **Installer:** `installer_output\911DispatchRelay-Setup-1.5.6.exe` - hand this single file to
   anyone; it installs to Program Files with shortcuts + an uninstaller.
 
 ---
@@ -61,8 +61,9 @@ Then, for the installer, open `installer.iss` in Inno Setup and click **Build > 
 
 - **ffmpeg** is handled automatically - it's bundled via the `imageio-ffmpeg` dependency, so the
   built app decodes audio without a separate ffmpeg install.
-- **Nothing else is required.** Since v1.3.0 the app reads the RAGE MP `.storage` chat log
-  directly, so there is no OCR engine to install or bundle - Tesseract, the `vendor\tesseract\`
+- **Nothing else is required.** Since v1.5.6 the app reads the FiveM chat log written by the
+  GTA World Chat Log Assistant (and still supports RAGE MP `.storage`), so there is no OCR
+  engine to install or bundle - Tesseract, the `vendor\tesseract\`
   folder, and the `pytesseract` / `mss` / `pyautogui` dependencies are all gone.
 
 ---

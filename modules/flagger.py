@@ -5,6 +5,33 @@ import time
 from collections import OrderedDict, deque
 from difflib import SequenceMatcher
 
+try:  # channel detection reuses the real chat parser
+    from modules import file_watcher as _fw
+except Exception:  # pragma: no cover - script/frozen import styles
+    try:
+        from . import file_watcher as _fw
+    except Exception:
+        _fw = None
+
+# Live capture reads the game's own chat box, which prefixes lines with the
+# channel: "(pm) Connor Myer: ...", "(radio:BASE) Connor Myer: ...".
+_HUD_CHANNEL_RE = re.compile(
+    r"^\(\s*(?P<chan>[A-Za-z][A-Za-z0-9 _-]{0,18}?)\s*(?::[^)]*)?\)\s*"
+)
+_LEAD_TS_RE = re.compile(r"^\[\d{1,2}:\d{2}:\d{2}\]\s*")
+# "Connor Myer says [radio]: ..." is radio even without the [S: | CH:] prefix.
+_RADIO_TAG_RE = re.compile(
+    r"\bsays\s*\[[^\]]*\b(?:radio|dispatch|hq|air)\b", re.I
+)
+
+# Channels that are never radio traffic. Anything NOT listed here is still
+# read, so an unfamiliar channel name can never silence the app.
+DEFAULT_IGNORED_CHANNELS = (
+    "pm", "dm", "whisper", "w", "ooc", "b", "looc", "global", "ame", "ado",
+    "me", "do", "local", "say", "shout", "s", "low", "megaphone", "phone",
+    "cellphone", "news", "ad", "advert", "twt", "tweet", "pmto", "pmfrom",
+)
+
 _SELF_NOISE = [
     r"dispatch relay",
     r"recent flagged",
@@ -171,15 +198,15 @@ _CODE_SEVEN_LOC_RE = re.compile(
 )
 
 DEFAULT_MDC_NAME_PATTERNS = [
-    r"(?:code ?ten|code ?10|wants?(?: and warrants?)? check|warrant check|wants? check|name check)(?: on| for| of)? (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3})",
-    r"(?:let me get|lemme get|get me|gimme|give me|can (?:you|i)(?: get| run| pull)?|could you|would you|please|run|do|need|pull up|pull|look ?up|check)(?: me| us| a| the)* (?:code ?ten|code ?10|wants?(?: and warrants?)? check|warrant check|wants? check|name check|check|name)(?: on| for| of)? (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3})",
+    r"(?:code ?ten|code ?10|10[ -]?29|name check|wants?(?: and warrants?)? check|warrant check|wants? check)(?: on| for| of)? (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3})",
+    r"(?:let me get|lemme get|get me|gimme|give me|can (?:you|i)(?: get| run| pull)?|could you|would you|please|run|do|need|pull up|pull|look ?up|check)(?: me| us| a| the)* (?:code ?ten|code ?10|10[ -]?29|name check|wants?(?: and warrants?)? check|warrant check|wants? check|check|name)(?: on| for| of)? (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3})",
     r"(?:run|pull(?: up)?|look ?up|get|do)(?: me| us)?(?: a| the)? name(?: check)?(?: on| for| of)? (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3})",
     r"(?:run|check|pull(?: up)?) (?P<target>[a-z'.-]+(?: [a-z'.-]+){1,3}) (?:for me|for wants(?: and warrants)?|for warrants|through (?:the )?(?:mdc|system|dispatch)|in the (?:mdc|system))",
 ]
 
 DEFAULT_MDC_PLATE_PATTERNS = [
     r"(?:look ?up|run|check|pull(?: up)?|do|can (?:you|i)(?: run| check| pull)?|could you|would you|please)(?: me| a| this| that| the| us)* (?:license )?(?:plate|tag|registration|reg)(?: number)?(?: of| on| for)? (?P<plate>[a-z0-9][a-z0-9 -]{1,12})",
-    r"(?:registration check|reg check|dmv return|dmv check)(?: on| for| of)? (?P<plate>[a-z0-9][a-z0-9 -]{1,12})",
+    r"(?:code ?28|10[ -]?28|code ?27|10[ -]?27)(?: on| for| of)? (?P<plate>[a-z0-9][a-z0-9 -]{1,12})",
     r"(?:who(?:'s| is| owns)|registered owner of|ro of|owner of|dmv(?: on| for| check)?) (?:the )?(?:plate |tag )?(?P<plate>[a-z0-9]{2,3}[ -]?[a-z0-9]{2,4})",
 ]
 
@@ -289,6 +316,14 @@ class Flagger:
         self.status_dedup_sec = float(90 if _sd is None else _sd)
         cb = cfg.get("call_block", {}) or {}
         self.call_block_enabled = bool(cb.get("enabled", True))
+        ignored = cfg.get("ignore_channels")
+        if ignored is None:
+            ignored = list(DEFAULT_IGNORED_CHANNELS)
+        self.ignored_channels = {
+            str(c).strip().lower().replace(" ", "")
+            for c in ignored
+            if str(c).strip()
+        }
         self.radio_enabled = bool(cfg.get("radio_traffic", True))
         self.require_structure = bool(cfg.get("require_chat_structure", True))
         self.panic_enabled = bool(cfg.get("panic_button", True))
@@ -330,6 +365,8 @@ class Flagger:
             for c in (cfg.get("own_callsigns") or cad_cfg.get("callsigns") or [])
             if str(c).strip()
         ]
+        # Empty = not configured; see _match_own_callsign.
+        self.callsigns_unset = not self.own_callsigns
         self.skip_names = [
             str(n).strip().lower()
             for n in (cfg.get("skip_own_names") or [])
@@ -468,6 +505,30 @@ class Flagger:
                 return True
         return False
 
+    def channel_of(self, line: str) -> str:
+        """Which chat channel a line came from: radio, pm, ooc, local...
+
+        Returns "unknown" when we cannot tell, and unknown is always allowed -
+        guessing wrong must never stop the app answering the radio.
+        """
+        text = _LEAD_TS_RE.sub("", (line or "").strip())
+        if not text:
+            return "unknown"
+        m = _HUD_CHANNEL_RE.match(text)
+        if m:
+            return m.group("chan").strip().lower().replace(" ", "")
+        if _RADIO_TAG_RE.search(text):
+            return "radio"
+        if _fw is not None:
+            try:
+                return (_fw.parse_line(text).channel or "unknown").lower()
+            except Exception:
+                return "unknown"
+        return "unknown"
+
+    def _is_ignored_channel(self, line: str) -> bool:
+        return self.channel_of(line) in self.ignored_channels
+
     @classmethod
     def _has_chat_structure(cls, text: str) -> bool:
         if _CHAT_SPEAKER_RE.search(text):
@@ -605,6 +666,10 @@ class Flagger:
         n = self._norm_callsign(callsign)
         if not n:
             return False
+        if not self.own_callsigns:
+            # Nothing configured yet. Answering NOTHING makes the app look broken,
+            # so treat every unit as yours until you narrow it down in Settings.
+            return True
         for o in self.own_callsigns:
             if not o:
                 continue
@@ -1106,6 +1171,9 @@ class Flagger:
                 flags.append(call)
 
         for line in self._stabilize(lines):
+            # A PM, an OOC line or a /me is not radio traffic, whatever it says.
+            if self._is_ignored_channel(line):
+                continue
             if self._field_label(line) is not None:
                 continue
             if any(p.search(line) for p in self.ignore):
