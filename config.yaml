@@ -1,18 +1,3 @@
-# ---------------------------------------------------------------------------
-# Chat log input
-# ---------------------------------------------------------------------------
-# GTA World runs on FiveM now. FiveM does NOT save the chat anywhere on disk -
-# it lives in the game's local NUI page and disappears when the frame redraws.
-# So the app reads the file the GTA World Chat Log Assistant (GTAW Log Parser)
-# writes while you play:
-#   %LOCALAPPDATA%\GTAW-Log-Parser-FiveM\current-session.txt
-# Plain UTF-8 text, one chat line each, "[HH:mm:ss] text". Keep the assistant
-# running alongside FiveM. The file is emptied at the start of every session -
-# the app notices and resyncs instead of replaying old chat.
-#
-# Old RAGE MP .storage files (JSON, chat under "chat_log") still work - the app
-# detects which kind of file it was given. It only ever READS the file; it never
-# writes to it and never touches game memory.
 input_source:
   source: auto             # auto = FiveM assistant file first, then RAGE MP. Force with: fivem | ragemp
   capture: auto            # auto = read FiveM's chat straight out of the game (no extra software). off = log file only.
@@ -144,8 +129,8 @@ tts:
     rate: 175
     voice_contains: zira
   elevenlabs:
-    api_key: 759c2bab7710a0e017d0f733e00f4050656644af0cd54588373afcfdfae3c5f1
-    voice_id: pYduSEMlSc5NZ5UXU4aO
+    api_key: ''
+    voice_id: ''
     model_id: eleven_turbo_v2
     stability: 0.5
     similarity_boost: 0.75
