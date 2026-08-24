@@ -374,7 +374,57 @@ def _to_reporting_party(text: str) -> str:
     return out
 
 
-def _summarize_situation(text: str) -> str:
+_RADIO_PRONOUN_SUBS = [
+    (r"\bI'm\b", "you're"),
+    (r"\bI am\b", "you are"),
+    (r"\bI've\b", "you've"),
+    (r"\bI'll\b", "you'll"),
+    (r"\bwe're\b", "you're"),
+    (r"\bwe've\b", "you've"),
+    (r"\bwe'll\b", "you'll"),
+    (r"\bmyself\b", "yourself"),
+    (r"\bourselves\b", "yourselves"),
+    (r"\bmine\b", "yours"),
+    (r"\bours\b", "yours"),
+    (r"\bmy\b", "your"),
+    (r"\bour\b", "your"),
+    (r"\bI\b", "you"),
+    (r"\bwe\b", "you"),
+    (r"\bme\b", "you"),
+]
+
+
+def _to_unit_voice(text: str) -> str:
+    """Flip the unit's first person into second person.
+
+    A unit says "requesting an OPG tow to my location"; dispatch has to answer
+    "...en route to your location". Repeating "my location" makes dispatch sound
+    like it is asking for its own tow truck.
+    """
+    out = _normalize_apostrophes(text or "")
+    for pat, repl in _RADIO_PRONOUN_SUBS:
+        out = re.sub(pat, repl, out, flags=re.I)
+    return re.sub(r"\s+", " ", out).strip()
+
+
+# Belt and braces for the AI path: dispatch has no legitimate reason to say
+# "my location", so scrub it even if the model parrots the transmission.
+_DISPATCH_FIRST_PERSON_SUBS = [
+    (r"\bto\s+my\b", "to your"),
+    (r"\bat\s+my\b", "at your"),
+    (r"\bfrom\s+my\b", "from your"),
+    (r"\bmy\s+(location|position|scene|vehicle|unit|status|twenty|20)\b", r"your \1"),
+]
+
+
+def scrub_dispatch_voice(text: str) -> str:
+    out = text or ""
+    for pat, repl in _DISPATCH_FIRST_PERSON_SUBS:
+        out = re.sub(pat, repl, out, flags=re.I)
+    return out
+
+
+def _summarize_situation(text: str, voice: str = "caller") -> str:
     t = _strip_phone(_strip_911_prefix(_clean_ocr(text)))
     t = re.sub(r"^\s*(help[!,. ]*)+", "", t, flags=re.I)
     t = re.sub(r"\bi\s*need\s*help\b[!,. ]*", "", t, flags=re.I)
@@ -388,7 +438,7 @@ def _summarize_situation(text: str) -> str:
     t = re.sub(r"\s+([,.;])", r"\1", t)
     t = re.sub(r"([,;])\s*(?=[,;])", "", t)
     t = re.sub(r"\s+", " ", t).strip(" .,-")
-    out = _to_reporting_party(t)
+    out = _to_unit_voice(t) if voice == "unit" else _to_reporting_party(t)
     words = out.split()
     if len(words) > 24:
         out = " ".join(words[:24]).rstrip(" .,-")
@@ -579,39 +629,154 @@ def _phon_cs(callsign) -> str:
         return str(callsign or "")
 
 
+# Real LAPD returns vary. One frozen sentence with semicolons in it sounds
+# like a form being read out, so each part of the return has a pool.
+_RET_WANTED = [
+    "{name} is 10-99, showing an active arrest warrant",
+    "be advised, {name} comes back with an active warrant on file",
+    "{name} returns 10-99, active wants and warrants",
+    "that name comes back to {name}, and he shows an active warrant",
+]
+_RET_CLEAR = [
+    "{name}, negative wants, negative warrants",
+    "{name} comes back clear, no wants or warrants on file",
+    "that return is {name}, no wants, no warrants",
+    "{name}, negative on wants and warrants",
+]
+_RET_EXECUTED = [
+    "{name}, no active warrants; MDC shows {n} previously executed",
+    "{name}, negative active warrants, {n} on file already executed",
+    "{name} comes back clear on active wants, {n} in the history already executed",
+]
+_RET_UNKNOWN = [
+    "{name}, record on file",
+    "that name returns to {name}",
+]
+_RET_CAUTION = [
+    "Be advised, subject is flagged {codes}",
+    "Caution codes on file: {codes}",
+    "Be advised, MDC shows {codes}",
+    "Subject carries caution codes, {codes}",
+]
+_RET_HISTORY = [
+    "Criminal history shows {bits}",
+    "Priors include {bits}",
+    "Record shows {bits}",
+    "History on file, {bits}",
+]
+_RET_NO_HISTORY = [
+    "No prior arrests on file",
+    "Criminal history comes back clear",
+    "No arrest history on file",
+]
+_RET_NO_RECORDS = [
+    "Criminal history could not be confirmed, recommend you check the MDC direct",
+    "Be advised, the record tables did not return, criminal history unconfirmed",
+]
+_RET_CAUTION_CLOSE = [
+    "Use caution",
+    "Advise if you need an additional unit",
+    "Handle code two",
+    "Use caution on approach",
+]
+
+
+# TTS reads a bare "52" as "five two" over a radio voice, so numbers in an MDC
+# return are spelled out as words instead. This is for the MDC readback only -
+# call signs and plates still go out digit by digit on purpose.
+_ONES = [
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+    "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+    "sixteen", "seventeen", "eighteen", "nineteen",
+]
+_TENS = [
+    "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy",
+    "eighty", "ninety",
+]
+
+
+def _num_words(value) -> str:
+    try:
+        n = int(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return str(value)
+    if n < 0 or n > 9999:
+        return str(n)
+    if n < 20:
+        return _ONES[n]
+    if n < 100:
+        tens, ones = divmod(n, 10)
+        return _TENS[tens] + ("-" + _ONES[ones] if ones else "")
+    if n < 1000:
+        hundreds, rest = divmod(n, 100)
+        out = _ONES[hundreds] + " hundred"
+        return out + (" " + _num_words(rest) if rest else "")
+    thousands, rest = divmod(n, 1000)
+    out = _num_words(thousands) + " thousand"
+    return out + (" " + _num_words(rest) if rest else "")
+
+
+def _count_phrase(n: int, one: str, many: str) -> str:
+    return f"{_num_words(n)} {one if n == 1 else many}"
+
+
 def _build_name_phrase(lead: str, r: dict) -> str:
     name = r.get("name") or r.get("target") or "the subject"
     cc = [c for c in (r.get("caution_codes") or []) if c]
     wi = [w for w in (r.get("warrant_items") or []) if w]
-    parts: list[str] = []
-    if r.get("wanted") or r.get("has_warrants") is True:
+    executed = int(r.get("executed_warrants") or 0)
+    active = r.get("wanted") or r.get("has_warrants") is True
+
+    sentences: list[str] = []
+    if active:
+        s = random.choice(_RET_WANTED).format(name=name)
         if wi:
-            parts.append(f"{name} is WANTED, active warrants: " + ", ".join(wi))
-        else:
-            parts.append(f"{name} is showing active wants and warrants")
+            s += ", " + ", ".join(wi[:3])
+        sentences.append(s)
+    elif executed and r.get("has_warrants") is False:
+        # An executed warrant is history, NOT a want. Calling this in as active
+        # is how an officer ends up detaining someone on a dead warrant.
+        sentences.append(random.choice(_RET_EXECUTED).format(
+            name=name, n=_count_phrase(executed, "warrant", "warrants")))
     elif r.get("has_warrants") is False:
-        parts.append(f"{name}, no wants, no warrants")
+        sentences.append(random.choice(_RET_CLEAR).format(name=name))
     else:
-        parts.append(f"{name}, record on file")
+        sentences.append(random.choice(_RET_UNKNOWN).format(name=name))
+
+    # Safety information comes before paperwork.
     if cc:
-        parts.append("caution flags: " + ", ".join(cc))
+        sentences.append(random.choice(_RET_CAUTION).format(codes=", ".join(cc)))
+
     fel = int(r.get("felony_count") or 0)
     mis = int(r.get("misdemeanor_count") or 0)
     if fel or mis:
         bits = []
         if fel:
-            bits.append(f"{fel} felon{'y' if fel == 1 else 'ies'}")
+            bits.append(_count_phrase(fel, "felony", "felonies"))
         if mis:
-            bits.append(f"{mis} misdemeanor{'' if mis == 1 else 's'}")
-        parts.append("prior arrests: " + ", ".join(bits))
-    elif r.get("has_arrests") is False:
-        parts.append("no prior arrests")
+            bits.append(_count_phrase(mis, "misdemeanor", "misdemeanors"))
+        sentences.append(random.choice(_RET_HISTORY).format(bits=" and ".join(bits)))
+    elif r.get("has_arrests") is False or r.get("records_available") is True:
+        sentences.append(random.choice(_RET_NO_HISTORY))
+    elif r.get("records_available") is None:
+        sentences.append(random.choice(_RET_NO_RECORDS))
+
     cp = r.get("criminal_points")
     if cp and re.fullmatch(r"[0-9,]+", str(cp).strip()):
-        parts.append(f"{cp} criminal points")
-    caution = bool(cc) or bool(r.get("wanted")) or r.get("has_warrants") is True
-    tail = ", use caution" if caution else ""
-    return lead + "; ".join(parts) + tail + "."
+        points = int(str(cp).replace(",", "").strip())
+        sentences.append(
+            "%s criminal point%s on record"
+            % (_num_words(points), "" if points == 1 else "s")
+        )
+
+    if bool(cc) or active:
+        sentences.append(random.choice(_RET_CAUTION_CLOSE))
+
+    body = ". ".join(s.strip().rstrip(".") for s in sentences if s and s.strip())
+    out = (lead or "").rstrip()
+    if out and not out.endswith((",", ".", ":")):
+        out += ","
+    return (out + " " + body).strip() + "."
 
 
 def _build_plate_phrase(lead: str, r: dict) -> str:
@@ -770,20 +935,7 @@ _STYLE_ADDENDUM = (
 )
 
 
-_VERIFY_PROMPT = (
-    "You screen text captured from a Grand Theft Auto roleplay game screen via OCR. "
-    "Decide whether it is a genuine emergency a police dispatcher should broadcast: "
-    "an actual 911/emergency call, or a police unit's radio transmission (code six, "
-    "shots fired, pursuit, requesting backup, etc.). "
-    "It is NOT genuine if it is on-screen interface text, advertisements, server "
-    "banners, message-of-the-day, menus, property or business posters, or ordinary "
-    "chatter that merely mentions such words. Reply with exactly one word: YES or NO."
-)
-
-
 class LLMProcessor:
-    VERIFY_TYPES = {"call", "chat", "radio"}
-
     def __init__(self, cfg: dict):
         cfg = cfg or {}
         self.enabled = bool(cfg.get("enabled", True))
@@ -798,8 +950,6 @@ class LLMProcessor:
         self.reasoning_effort = str(cfg.get("reasoning_effort", "low") or "low").lower()
         self.emergency_only = bool(cfg.get("emergency_only", True))
         self.tac_referral = bool(cfg.get("tac_referral", True))
-        self.verify_flags = bool(cfg.get("verify_flags", False))
-        self._verify_cache: dict = {}
 
     @staticmethod
     def _format_call_input(incident: str | None, situation: str, location: str | None) -> str:
@@ -814,7 +964,23 @@ class LLMProcessor:
     def _skip_non_emergency(self, text: str) -> bool:
         return self.emergency_only and not is_emergency(text)
 
+    # Types where dispatch is talking straight AT the unit. Anything the unit
+    # said in the first person has to come back in the second person.
+    UNIT_VOICE_TYPES = {
+        "cad", "code6", "clear", "code7", "opg", "eow", "out_status", "radio",
+    }
+
     def process(self, flag) -> str:
+        """Every dispatch line leaves through here, so it gets scrubbed once."""
+        out = self._dispatch_for(flag)
+        if not isinstance(out, str) or not out.strip():
+            return out
+        ftype = flag.get("type") if isinstance(flag, dict) else None
+        if ftype in self.UNIT_VOICE_TYPES:
+            return scrub_dispatch_voice(out)
+        return out
+
+    def _dispatch_for(self, flag) -> str:
         if isinstance(flag, dict) and flag.get("type") == "panic":
             return build_panic_dispatch(
                 flag.get("name"), flag.get("location"), flag.get("callsign")
@@ -846,7 +1012,8 @@ class LLMProcessor:
             )
         if isinstance(flag, dict) and flag.get("type") == "alarm":
             return build_alarm_dispatch(
-                flag.get("alarm"), flag.get("location"), flag.get("callsign")
+                flag.get("alarm"), flag.get("location"), flag.get("callsign"),
+                flag.get("model"),
             )
         if isinstance(flag, dict) and flag.get("type") == "radio":
             body = flag.get("body", "")
@@ -855,10 +1022,13 @@ class LLMProcessor:
                 out = self._api_rewrite(
                     "Unit radio transmission on the base channel. This is NOT a "
                     "911 call: acknowledge it as the dispatcher and do NOT assign "
-                    "a penal code.\n" + body
+                    "a penal code.\n"
+                    "You are dispatch speaking TO the unit, so never repeat its "
+                    "first person words: 'my location' is 'your location', "
+                    "'I need' is 'you need', 'me' is 'you'.\n" + body
                 )
                 if out:
-                    return out
+                    return scrub_dispatch_voice(out)
             return offline
 
         if isinstance(flag, dict) and flag.get("type") == "call":
@@ -1029,49 +1199,6 @@ class LLMProcessor:
             )
         except Exception as e:
             print(f"[llm] API failed, using offline LAPD generator ({e})")
-            return None
-
-    def verify_flag(self, flag) -> bool:
-        if not isinstance(flag, dict):
-            return True
-        if not (self.enabled and self.api_key and self.verify_flags):
-            return True
-        if flag.get("type") not in self.VERIFY_TYPES:
-            return True
-        if flag.get("type") == "call":
-            parts = [flag.get("situation") or "", flag.get("location") or ""]
-            text = " -- ".join(p for p in parts if p)
-        else:
-            text = flag.get("body") or flag.get("raw") or ""
-        text = text.strip()
-        if not text:
-            return True
-        if text in self._verify_cache:
-            return self._verify_cache[text]
-        verdict = self._api_yes_no(text)
-        result = True if verdict is None else verdict
-        if len(self._verify_cache) > 256:
-            self._verify_cache.clear()
-        self._verify_cache[text] = result
-        return result
-
-    def _api_yes_no(self, text: str) -> bool | None:
-        try:
-            out = (self._post_chat(
-                [
-                    {"role": "system", "content": _VERIFY_PROMPT},
-                    {"role": "user", "content": text},
-                ],
-                temperature=0,
-                max_tokens=3,
-            ) or "").strip().lower()
-            if out.startswith("y"):
-                return True
-            if out.startswith("n"):
-                return False
-            return None
-        except Exception as e:
-            print(f"[llm] verify failed, allowing flag ({e})")
             return None
 
 
@@ -1353,11 +1480,17 @@ def strip_ten_codes(text: str) -> str:
 
 
 def build_radio_dispatch(text: str, callsign: str | None = None) -> str:
+    return scrub_dispatch_voice(_build_radio_dispatch(text, callsign))
+
+
+def _build_radio_dispatch(text: str, callsign: str | None = None) -> str:
     raw = _clean_ocr(text)
     low = raw.lower()
     unit = phonetic_callsign(callsign) if callsign else ""
     unit_str = f"{unit}, " if unit else ""
     loc = radio_location(raw)
+    if loc:
+        loc = _to_unit_voice(loc)
     loc_str = f" at {loc}" if loc else ""
     loc_or_cad = f" at {loc}" if loc else ", refer to CAD for location"
 
@@ -1413,7 +1546,7 @@ def build_radio_dispatch(text: str, callsign: str | None = None) -> str:
             f"Dispatch, an additional unit is requested{loc_or_cad}, "
             f"Code 2. Any available unit to handle and identify."
         )
-    summary = _summarize_situation(raw)
+    summary = _summarize_situation(raw, voice="unit")
     return f"Control copies, {unit_str}{summary}{loc_str}. Units to assist, identify."
 
 
@@ -1576,7 +1709,17 @@ def expand_location_abbrev(text):
     return out
 
 
+# "my location" is how the UNIT talks about a place; it is not a place. If we
+# keep it, dispatch reads the unit's own words back at it.
+_FIRST_PERSON_LOC_RE = re.compile(
+    r"^\s*(?:my|our)\s+(?:location|loc|twenty|20|position|pos|spot|scene)\s*$",
+    re.I,
+)
+
+
 def _spoken_location(location):
+    if location and _FIRST_PERSON_LOC_RE.match(str(location)):
+        return None
     loc = _usable_location(location)
     if not loc:
         loc = location.strip() if location else None
@@ -1656,13 +1799,29 @@ _ALARM_CALLS = [
 ]
 
 
+_VEHICLE_ALARM_KINDS = {"vehicle", "car", "auto", "motorcycle"}
+
+
 def build_alarm_dispatch(
     kind: str | None = None,
     location: str | None = None,
     callsign: str | None = None,
+    model: str | None = None,
 ) -> str:
     k = (kind or "property").strip().lower()
     loc = _spoken_location(location)
+    if k in _VEHICLE_ALARM_KINDS:
+        what = ("a " + model.strip()) if model else "a vehicle"
+        if not loc:
+            return (
+                "All units, be advised, vehicle alarm activation on " + what
+                + ", last known location unconfirmed, refer to CAD."
+            )
+        return (
+            "All units, be advised, vehicle alarm activation on " + what
+            + ", last seen " + loc + ". Any unit in the area to check for a "
+            "possible vehicle theft, Code 2."
+        )
     if not loc:
         return (
             "All units, " + k + " alarm activation, location unconfirmed, refer to CAD."

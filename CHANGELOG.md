@@ -6,6 +6,123 @@
 > only be misleading, so they have been removed entirely. 1.4.0 is the first release of the
 > rebuilt app.
 
+## 1.5.7
+
+### Criminal points are no longer the subject's age
+
+A code ten on a subject with 52 criminal points read out "18 criminal points".
+The profile header is a two column layout: every label is rendered first
+("Age:", "Criminal Points:"), then every value (18, 52). The app walked forward
+from the "Criminal Points" label to the next value node, which is the age.
+Labels and values are now paired by position instead, and the value inside a
+badge wins, which is where the points total actually lives. As a backstop, a
+points total identical to the parsed age is never reported.
+
+The subject's age is now parsed as its own field rather than being discarded.
+
+### MDC numbers are spoken as numbers
+
+"52" came out as "five two" in a radio voice. Numbers in an MDC return are now
+spelled out as words - "fifty-two criminal points on record", "twelve
+felonies". Call signs and license plates are untouched and still go out digit by
+digit, because that is correct for those.
+
+
+### "to my location" is properly dead this time
+
+1.5.7 fixed the radio path, but OPG requests are built by a different function
+that never went through the scrub, so "start me an OPG tow to my location" still
+came back as "en route to my location". Fixing builders one at a time is
+whack-a-mole, so now **every** dispatch line leaves through a single choke point
+and gets scrubbed there. A new builder cannot reintroduce this bug.
+
+Also, "my location" is no longer treated as a place name at all: dispatch falls
+back to "on the way to your location" instead of repeating the unit's phrasing.
+
+### MDC returns sound like a dispatcher now
+
+The return used to be one frozen sentence stitched with semicolons. Each part of
+the readback now has its own pool of realistic phrasings, joined as sentences:
+
+> "Twenty-five Tom fifteen, Connor Myer comes back clear, no wants or warrants
+> on file. Be advised, subject is flagged Conceal Carry Holder. No prior arrests
+> on file. Use caution."
+
+Counts are spoken as words ("two felonies and one misdemeanor"), and safety
+information still comes before paperwork.
+
+### Executed warrants are no longer read as active
+
+An MDC profile has two warrant tables: `tableWarrantRecord` (the page labels it
+"Arrest Warrants") and `tableWarrantRecordOld` for executed ones. The app was
+never fetching the second, and any warrant row looked current. Now the two are
+counted separately, a row whose status says executed/served/expired/recalled is
+treated as history, and the subject is only called 10-99 when the ACTIVE count
+is one or more. The AI is told the same thing explicitly, so it cannot upgrade a
+dead warrant either.
+
+> "Nicky Munoz, no active warrants; MDC shows one previously executed."
+
+### Check for updates actually works
+
+The version parser took the first number it found in a release title - and this
+app is called **911** Dispatch Relay, so every release parsed as "version 911".
+Nothing could ever look newer. It now requires a dotted version and takes the
+highest one in the title, so "911 Dispatch Relay v1.5.5 - v1.5.6" resolves to
+1.5.6. Releases with an odd tag fall back to the release name.
+
+For the in-app update button to install rather than just point at the page, the
+release needs `911DispatchRelay-Setup-<version>.exe` attached as an asset.
+
+### Removed: AI verification of borderline flags
+
+That switch existed when the app read the screen with OCR and had to guess
+whether text was a real call. Reading the chat log directly makes it dead
+weight, and it cost an extra API round trip per flag. Gone from the settings,
+the config and the code.
+
+### Dispatch no longer repeats your own words back at you
+
+Ask for "an OPG tow to my location" and dispatch used to answer "...en route to
+my location". Dispatch speaks to you, so first person now flips to second
+person: "to your location", "you need", "your twenty". This applies to the
+offline wording and to the AI reply, which is also told the rule.
+
+### "own" scope now means own
+
+With no call signs configured, 1.5.5 treated every unit as yours so the app
+could not sit silent. If you deliberately set `scope: own`, that looked like a
+filter doing nothing. New switch, Settings > Only answer my call signs
+(`flagging.require_callsigns`): turn it on and an empty call sign list flags
+nothing at all. Left off, behaviour is unchanged.
+
+### Old chat is no longer re-read
+
+Two causes. A slow poll or a re-rendered chat box broke the overlap match, so
+every line on screen looked new; and each re-attach truncated the session file
+and wrote the whole visible window again. The capture now remembers the lines
+it has already written (across reconnects) and never writes one twice, so
+nothing from ten minutes ago gets answered a second time.
+
+### MDC: the record was never actually being read
+
+Every record table on an MDC profile is a serverSide DataTable. The profile page
+we download contains column headers and nothing else, which is why a subject
+with felonies and misdemeanors came back "no criminal history". The app now
+requests the rows from `/record/populate/<Name>` and counts them properly.
+
+- Caution codes lead the readback. "Conceal Carry Holder" is said before warrant
+  counts, not dropped.
+- If the rows cannot be read, dispatch says the criminal history could not be
+  confirmed. It will never call a subject clean off the back of an empty page.
+
+### Security firm vehicle alarms (optional)
+
+Off by default. Settings > Flag security firm vehicle alarms
+(`flagging.alarms.vehicle`) picks up vehicle alarms posted in chat by a security
+firm, pulls out the model and the last known location, and puts out a call:
+"All units, be advised, vehicle alarm activation on a Sultan, last seen ...".
+
 ## 1.5.6
 
 - **Only radio traffic is flagged now.** A PM to yourself saying "25T15, clear."

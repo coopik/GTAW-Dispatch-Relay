@@ -26,7 +26,7 @@ except Exception:
 try:
     from modules.app_paths import APP_VERSION
 except Exception:
-    APP_VERSION = "1.5.6"
+    APP_VERSION = "1.5.7"
 
 PALETTE = {
     "page": ("#f4f6fb", "#070b14"),
@@ -144,8 +144,6 @@ SETTINGS_SCHEMA = [
          "kind": "bool"},
         {"path": ["llm", "tac_referral"], "label": "Refer priority calls to TAC (pursuits, shots fired)",
          "kind": "bool"},
-        {"path": ["llm", "verify_flags"], "label": "AI verification: double-check borderline flags before dispatch (needs API key)",
-         "kind": "bool"},
         {"path": ["llm", "provider"], "label": "Provider", "kind": "text"},
         {"path": ["llm", "base_url"], "label": "Base URL", "kind": "text"},
         {"path": ["llm", "model"], "label": "Model", "kind": "text"},
@@ -159,6 +157,11 @@ SETTINGS_SCHEMA = [
         {"path": ["flagging", "dedup_history"], "label": "De-dup memory (lines)", "kind": "int"},
         {"path": ["flagging", "call_block", "enabled"], "label": "Parse MDC / 911 call cards", "kind": "bool"},
         {"path": ["flagging", "radio_traffic"], "label": "Read unit radio traffic (base channel)", "kind": "bool"},
+        {"path": ["flagging", "require_callsigns"], "label": "Only answer my call signs (strict)", "kind": "bool",
+         "hint": "On: scope own means exactly the call signs you listed, so an empty list flags nothing. "
+                 "Off: an empty list answers every unit."},
+        {"path": ["flagging", "alarms", "vehicle"], "label": "Flag security firm vehicle alarms", "kind": "bool",
+         "hint": "Reads out vehicle alarms posted in chat by a security firm, with the model and last known location."},
         {"path": ["flagging", "ignore_channels"], "label": "Channels to ignore", "kind": "list",
          "hint": "Never flagged, whatever they say - PMs, OOC, /me, /do, local speech. "
                  "Channels not listed here are still read, so a missing name can never silence "
@@ -1398,7 +1401,7 @@ class DispatchApp(ctk.CTk):
         ctk.CTkLabel(support, text="  Found a bug?", font=self.f_h, text_color=PALETTE["text"],
                      image=self._icon("info", 18, IC_PRIMARY), compound="left").grid(
             row=0, column=0, sticky="w", padx=22, pady=(18, 2))
-        ctk.CTkLabel(support, text="DM me on Discord:  _covxx_", font=self.f_bb,
+        ctk.CTkLabel(support, text="DM me on Discord:  _coopik_", font=self.f_bb,
                      text_color=PALETTE["primary"]).grid(row=1, column=0, sticky="w", padx=22, pady=(0, 4))
         ctk.CTkLabel(support, text="Please include what you were doing and a screenshot if you can.",
                      font=self.f_s, text_color=PALETTE["muted"]).grid(row=2, column=0, sticky="w", padx=22, pady=(0, 18))

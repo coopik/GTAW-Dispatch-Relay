@@ -15,14 +15,21 @@ except Exception:
 from modules import app_paths
 
 _UA = "911DispatchRelay-Updater"
-_VER_RE = re.compile(r"(\d+(?:\.\d+)*)")
+# The app is called 911 Dispatch Relay, so a release named
+# "911 Dispatch Relay v1.5.6" used to parse as version 911 and the update
+# check never worked. Require a dotted number, and take the highest one so a
+# title like "v1.5.5 - v1.5.6" resolves to 1.5.6.
+_VER_RE = re.compile(r"v?(\d+(?:\.\d+){1,3})")
 
 
 def parse_version(text: str) -> tuple:
-    m = _VER_RE.search(str(text or ""))
-    if not m:
+    found = [
+        tuple(int(p) for p in m.group(1).split("."))
+        for m in _VER_RE.finditer(str(text or ""))
+    ]
+    if not found:
         return (0,)
-    return tuple(int(p) for p in m.group(1).split("."))
+    return max(found)
 
 
 def is_newer(remote: str, local: str) -> bool:
@@ -191,6 +198,9 @@ class Updater:
                 return None
         if "tag_name" in data or "assets" in data:
             version = data.get("tag_name") or data.get("name") or ""
+            if parse_version(version) == (0,):
+                # An untagged or oddly named release still has a title.
+                version = data.get("name") or version
             asset = None
             for a in data.get("assets") or []:
                 name = str(a.get("name", "")).lower()

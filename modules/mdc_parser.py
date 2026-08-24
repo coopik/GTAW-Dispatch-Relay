@@ -208,6 +208,38 @@ def _looks_like_caution(text: str | None) -> bool:
     return bool(re.fullmatch(r"[A-Za-z][A-Za-z '\-/&.]*", t))
 
 
+def _details_pairs(soup) -> dict:
+    """Pair the profile header labels with their values BY POSITION.
+
+    The header is a two column layout: EVERY label is emitted first, then every
+    value. Walking forward from the "Criminal Points" label therefore lands on
+    the age, which is how a 52 point subject was read out as 18 points.
+
+    Values may be wrapped in a badge (criminal points is a red badge), so the
+    badge text wins when one is present.
+    """
+    if soup is None:
+        return {}
+    try:
+        titles = soup.select(".characterDetailsTitle")
+        values = soup.select(".characterDetailsValue")
+    except Exception:
+        return {}
+    out = {}
+    for title, value in zip(titles, values):
+        key = _clean(title.get_text(" ", strip=True) or "")
+        key = key.replace(" :", ":").rstrip(":").strip().lower()
+        node = None
+        try:
+            node = value.select_one(".badge")
+        except Exception:
+            node = None
+        text = _clean((node or value).get_text(" ", strip=True) or "")
+        if key and text and key not in out:
+            out[key] = text
+    return out
+
+
 def _points_from_pairs(pairs: dict) -> str | None:
     for key, val in (pairs or {}).items():
         k = str(key).strip().lower().rstrip(":")
@@ -216,6 +248,143 @@ def _points_from_pairs(pairs: dict) -> str | None:
             if cand and re.fullmatch(r"[0-9,]+", cand):
                 return cand
     return None
+
+
+_POPULATE_URL_RE = re.compile(r"""url\s*:\s*['\"](/record/populate/[^'\"]+)['\"]""")
+_POPULATE_CHAR_RE = re.compile(r"""d\.char\s*=\s*['\"](\d+)['\"]""")
+_POPULATE_NAME_RE = re.compile(r"""d\.charName\s*=\s*['\"]([^'\"]+)['\"]""")
+_POPULATE_TYPE_RE = re.compile(r"""d\.type\s*=\s*['\"](table\w+)['\"]""")
+
+# The tables worth reading for a code ten, in the order we want to report them.
+# Order matters: these are fetched in sequence and the first few decide what
+# dispatch says. tableWarrantRecord is the ACTIVE warrant table (the page
+# labels it "Arrest Warrants"); tableWarrantRecordOld holds executed ones.
+RECORD_TABLES = [
+    "tableCriminalRecord",
+    "tableWarrantRecord",
+    "tableWarrantRecordOld",
+    "tableTrafficRecord",
+    "tableInformationRecord",
+]
+ACTIVE_WARRANT_TABLE = "tableWarrantRecord"
+OLD_WARRANT_TABLE = "tableWarrantRecordOld"
+
+
+def find_populate_targets(html: str) -> dict | None:
+    """Work out how to ask MDC for the record rows the page left empty.
+
+    Every record table on the profile is a serverSide DataTable pointed at
+    /record/populate/<Name>, parameterised with the character id and a table
+    type. Without this call the page contains headers and nothing else.
+    """
+    if not html:
+        return None
+    m = _POPULATE_URL_RE.search(html)
+    if not m:
+        return None
+    char = _POPULATE_CHAR_RE.search(html)
+    name = _POPULATE_NAME_RE.search(html)
+    types = []
+    for t in _POPULATE_TYPE_RE.findall(html):
+        if t not in types:
+            types.append(t)
+    return {
+        "path": m.group(1),
+        "char": char.group(1) if char else "",
+        "char_name": name.group(1) if name else "",
+        "types": [t for t in RECORD_TABLES if t in types] or types,
+    }
+
+
+_ROW_FELONY_RE = re.compile(r"\bfelon(?:y|ies)\b", re.I)
+_ROW_MISD_RE = re.compile(r"\bmisdemeanou?rs?\b", re.I)
+_ROW_INFRACTION_RE = re.compile(r"\binfractions?\b", re.I)
+
+
+def _row_cells(row) -> list:
+    if isinstance(row, dict):
+        values = [row.get(k) for k in sorted(row.keys(), key=str)]
+    elif isinstance(row, (list, tuple)):
+        values = list(row)
+    else:
+        values = [row]
+    out = []
+    for v in values:
+        if v is None:
+            continue
+        text = _clean(visible_text(str(v)) if "<" in str(v) else str(v))
+        if text:
+            out.append(text)
+    return out
+
+
+# A warrant that has been executed is HISTORY. Reading it out as an active
+# want gets somebody detained on a dead warrant.
+_ROW_EXECUTED_RE = re.compile(
+    r"\b(?:executed|served|cleared|expired|inactive|recalled|quashed|closed|"
+    r"withdrawn|dismissed)\b",
+    re.I,
+)
+_ROW_STATUSY_RE = re.compile(r"^(?:active|executed|served|pending|closed|paid|"
+                            r"unpaid|cleared|expired|guilty|convicted)$", re.I)
+
+
+def _warrant_charge(cells: list) -> str:
+    """Pick the charge text out of a warrant row for the readback."""
+    best = ""
+    for c in cells:
+        t = str(c).strip()
+        if not t or t.isdigit() or _ROW_STATUSY_RE.match(t):
+            continue
+        if len(t) > len(best) and len(t) <= 90:
+            best = t
+    return best
+
+
+def parse_populate_rows(payload, table_type: str | None = None) -> dict:
+    """Turn a DataTables response into counts we can read over the air."""
+    rows = []
+    if isinstance(payload, dict):
+        rows = payload.get("data") or payload.get("aaData") or []
+    elif isinstance(payload, list):
+        rows = payload
+    felony = misdemeanor = infraction = 0
+    active_warrants = executed_warrants = 0
+    warrant_items = []
+    is_old = table_type == OLD_WARRANT_TABLE
+    is_warrant = is_old or table_type == ACTIVE_WARRANT_TABLE
+    samples = []
+    for row in rows:
+        cells = _row_cells(row)
+        if not cells:
+            continue
+        joined = " | ".join(cells)
+        if is_warrant:
+            if is_old or _ROW_EXECUTED_RE.search(joined):
+                executed_warrants += 1
+            else:
+                active_warrants += 1
+                charge = _warrant_charge(cells)
+                if charge and len(warrant_items) < 3:
+                    warrant_items.append(charge)
+        if _ROW_FELONY_RE.search(joined):
+            felony += 1
+        elif _ROW_MISD_RE.search(joined):
+            misdemeanor += 1
+        elif _ROW_INFRACTION_RE.search(joined):
+            infraction += 1
+        if len(samples) < 5:
+            samples.append(joined[:160])
+    return {
+        "rows": len([r for r in rows if _row_cells(r)]),
+        "felony": felony,
+        "misdemeanor": misdemeanor,
+        "infraction": infraction,
+        "active_warrants": active_warrants,
+        "executed_warrants": executed_warrants,
+        "warrant_items": warrant_items,
+        "samples": samples,
+    }
 
 
 def parse_name_result(html: str, selectors: dict | None = None) -> dict:
@@ -287,16 +456,23 @@ def parse_name_result(html: str, selectors: dict | None = None) -> dict:
     warrants_txt = _select_text(soup, warrants_sel) if warrants_sel else None
 
     criminal_points = None
+    age = None
     if soup is not None:
         try:
-            for title in soup.select(".characterDetailsTitle"):
-                if "criminal point" in (title.get_text(" ", strip=True) or "").lower():
-                    val = title.find_next(class_="characterDetailsValue")
-                    if val is not None:
-                        criminal_points = _clean(val.get_text(" ", strip=True))
-                    break
+            details = _details_pairs(soup)
+            for key, val in details.items():
+                if "criminal point" in key:
+                    if re.fullmatch(r"[0-9,]+", val):
+                        criminal_points = val
+                elif key.startswith("age"):
+                    if re.fullmatch(r"[0-9]{1,3}", val):
+                        age = val
             if criminal_points is None:
-                criminal_points = _points_from_pairs(pairs)
+                fb = _points_from_pairs(pairs)
+                # The old label walk landed on the age. Never report that as
+                # a points total again.
+                if fb is not None and fb != age:
+                    criminal_points = fb
         except Exception:
             pass
 
@@ -372,9 +548,14 @@ def parse_name_result(html: str, selectors: dict | None = None) -> dict:
         "warrant_items": warrant_items,
         "caution_codes": caution_codes,
         "criminal_points": criminal_points,
+        "age": age,
         "arrests": arrests,
         "felony_count": felony_count,
         "misdemeanor_count": misdemeanor_count,
+        # None = we have not actually read the record tables yet. Only the
+        # populate fetch may turn this into True/False, so nobody ever says
+        # "no criminal history" off the back of an empty page shell.
+        "records_available": None,
         "has_arrests": has_arrests,
         "aliases": aliases,
         "vehicles": [v for v in vehicles if v],

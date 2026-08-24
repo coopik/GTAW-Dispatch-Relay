@@ -589,19 +589,6 @@ class DispatchRelay:
                 self._log(f"MDC error: {e}")
             return
         try:
-            if not self.llm.verify_flag(flag):
-                self._log("AI filter: not a real call -- skipped.")
-                self.recent.appendleft(
-                    {
-                        "time": datetime.now().strftime("%H:%M:%S"),
-                        "raw": summary,
-                        "dispatch": "(skipped: AI filter)",
-                    }
-                )
-                return
-        except Exception as e:
-            self._log(f"AI filter error (allowing): {e}")
-        try:
             dispatch = self.llm.process(flag)
         except Exception as e:
             self._log(f"LLM error: {e}")

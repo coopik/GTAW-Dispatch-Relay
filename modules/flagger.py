@@ -230,14 +230,38 @@ _OUT_STATUS_RE = re.compile(
 )
 _ALARM_RE = re.compile(
     r"\b(?:silent|audible|burglar(?:y)?|commercial|residential|business|property|"
-    r"fire|hold\s?-?up|robbery)\s+alarm\b|"
+    r"vehicle|car|auto|motorcycle|fire|hold\s?-?up|robbery)\s+alarm\b|"
     r"\balarm\s+(?:activation|call|going\s+off|tripped|sounding|drop)\b|"
     r"\b(?:activated|tripped)\s+alarm\b",
     re.I,
 )
 _ALARM_KIND_RE = re.compile(
     r"\b(silent|audible|burglary|burglar|commercial|residential|business|property|"
-    r"fire|hold\s?-?up|robbery)\b",
+    r"vehicle|car|auto|motorcycle|fire|hold\s?-?up|robbery)\b",
+    re.I,
+)
+
+# A vehicle alarm is not unit radio traffic: a security firm posts it in chat
+# with the model and where the vehicle was last seen. Opt-in, because most
+# operators do not want every car alarm in the city read out.
+_VEHICLE_KINDS = {"vehicle", "car", "auto", "motorcycle"}
+_VEHICLE_ALARM_RE = re.compile(r"\b(?:vehicle|car|auto|motorcycle)\b", re.I)
+_SECURITY_FIRM_RE = re.compile(
+    r"\b(?:security|alarm)\s*(?:firm|company|co\.?|services?|systems?|"
+    r"monitoring|response|centre|center|dispatch)\b",
+    re.I,
+)
+_VEHICLE_MODEL_RE = re.compile(
+    r"\b(?:model|make|vehicle)\s*[:\-]\s*(?P<model>[\w][\w' -]{2,32})"
+    r"|\balarm\s+(?:went\s+off|activation|activated|triggered|tripped)\s+"
+    r"(?:on|for)\s+(?:a|an)?\s*(?P<model2>[\w][\w' -]{2,32})"
+    r"|\b(?:on|for)\s+(?:a|an)\s+(?P<model3>[\w][\w' -]{2,32}?)"
+    r"(?=[,.;]|\s+last\b|\s+at\b|$)",
+    re.I,
+)
+_LAST_LOCATION_RE = re.compile(
+    r"\blast\s+(?:known\s+)?(?:location|seen|position)\b\s*"
+    r"(?:was\s+|at\s+|near\s+|:\s*|-\s*)?(?P<loc>[^.;|]{3,60})",
     re.I,
 )
 # Wording that closes an alarm call instead of opening one.
@@ -351,6 +375,11 @@ class Flagger:
         self.out_status_scope = str(out_cfg.get("scope", "own")).lower()
         alarm_cfg = cfg.get("alarms", {}) or {}
         self.alarm_enabled = bool(alarm_cfg.get("enabled", True))
+        # Strict mode: honour 'scope: own' literally, even with no call signs
+        # configured (which means nothing gets flagged - that is the point).
+        self.require_callsigns = bool(cfg.get("require_callsigns", False))
+        self.callsign_fallback_hits = 0
+        self.vehicle_alarm_enabled = bool(alarm_cfg.get("vehicle", False))
         mdc_cfg = cfg.get("mdc_lookup", {}) or {}
         self.mdc_enabled = bool(mdc_cfg.get("enabled", False))
         self.mdc_scope = str(mdc_cfg.get("scope", "own")).lower()
@@ -668,7 +697,12 @@ class Flagger:
             return False
         if not self.own_callsigns:
             # Nothing configured yet. Answering NOTHING makes the app look broken,
-            # so treat every unit as yours until you narrow it down in Settings.
+            # so treat every unit as yours until you narrow it down in Settings -
+            # unless the operator asked for strict matching, in which case an
+            # empty list means exactly what it says.
+            if self.require_callsigns:
+                return False
+            self.callsign_fallback_hits += 1
             return True
         for o in self.own_callsigns:
             if not o:
@@ -1007,6 +1041,26 @@ class Flagger:
             "raw": body,
         }
 
+    @staticmethod
+    def _alarm_model(body: str):
+        """Pull the vehicle model out of a security firm broadcast."""
+        m = _VEHICLE_MODEL_RE.search(body or "")
+        if not m:
+            return None
+        for key in ("model", "model2", "model3"):
+            try:
+                val = m.group(key)
+            except Exception:
+                val = None
+            if not val:
+                continue
+            val = re.sub(r"\s+", " ", val).strip(" ,.;-")
+            if val.lower() in ("vehicle", "car", "auto", "alarm"):
+                continue
+            if 2 < len(val) <= 34:
+                return val
+        return None
+
     def _parse_alarm(self, line: str) -> dict | None:
         if not self.alarm_enabled:
             return None
@@ -1023,17 +1077,31 @@ class Flagger:
         if mk:
             kind = re.sub(r"\s+", "", mk.group(1).lower()).replace("-", "")
             kind = {"burglar": "burglary", "holdup": "hold-up"}.get(kind, kind)
+        is_vehicle = kind in _VEHICLE_KINDS or (
+            bool(_VEHICLE_ALARM_RE.search(body)) and bool(_SECURITY_FIRM_RE.search(body))
+        )
+        model = None
+        if is_vehicle:
+            if not self.vehicle_alarm_enabled:
+                return None
+            kind = "vehicle"
+            model = self._alarm_model(body)
         location = self._trailing_location(body, m.end())
         if not location:
             location = self._trailing_location(body)
+        if is_vehicle:
+            ml = _LAST_LOCATION_RE.search(body)
+            if ml:
+                location = re.sub(r"\s+", " ", ml.group("loc")).strip(" ,.;-")
         callsign = self._line_callsign(body)
-        if not location and callsign:
+        if not location and callsign and not is_vehicle:
             return None
         if not self._is_new(body):
             return None
         return {
             "type": "alarm",
             "alarm": kind,
+            "model": model,
             "callsign": callsign,
             "location": location,
             "raw": body,

@@ -32,12 +32,12 @@ It will:
 1. create an isolated build environment (`.buildenv\`),
 2. install the dependencies + PyInstaller,
 3. bundle everything into `dist\911 Dispatch Relay\`,
-4. if Inno Setup is installed, produce `installer_output\911DispatchRelay-Setup-1.5.6.exe`.
+4. if Inno Setup is installed, produce `installer_output\911DispatchRelay-Setup-1.5.7.exe`.
 
 **Outputs:**
 - **Standalone app:** `dist\911 Dispatch Relay\911 Dispatch Relay.exe` - copy this whole folder
   anywhere and run the `.exe`. No install needed.
-- **Installer:** `installer_output\911DispatchRelay-Setup-1.5.6.exe` - hand this single file to
+- **Installer:** `installer_output\911DispatchRelay-Setup-1.5.7.exe` - hand this single file to
   anyone; it installs to Program Files with shortcuts + an uninstaller.
 
 ---

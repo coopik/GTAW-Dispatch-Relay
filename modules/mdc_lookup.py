@@ -6,7 +6,7 @@ import queue
 import threading
 import time
 from logging.handlers import RotatingFileHandler
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 
 from modules import app_paths
 from modules.mdc_auth import MDCSession
@@ -193,12 +193,19 @@ class MDCManager:
         self._backoff = 0.0
         self._session_ok = True
 
+        # Every record table on an MDC profile is a serverSide DataTable, so the
+        # page we just downloaded holds column headers and NOTHING else. Ask for
+        # the rows before anyone gets to decide this subject is clean.
+        records = {}
+        if lookup != "plate":
+            records = self._fetch_records(html, final_url)
+
         # the fallback when there's no API key or the AI path yields nothing.
         phrase = ""
         result = {"lookup": lookup, "target": target, "found": True}
         if self.ai_read_page and self.llm is not None and getattr(self.llm, "has_api", None) and self.llm.has_api():
             try:
-                page_text = mdc_parser.visible_text(html)
+                page_text = mdc_parser.visible_text(html) + self._records_text(records)
                 phrase = self.llm.mdc_response_from_page(
                     page_text, lookup, target, callsign, acknowledged=self.standby_ack
                 ) or ""
@@ -213,6 +220,7 @@ class MDCManager:
                 result = mdc_parser.parse_plate_result(html, self.selectors.get("plate"))
             else:
                 result = mdc_parser.parse_name_result(html, self.selectors.get("name"))
+                self._merge_records(result, records)
             result["target"] = target
             phrase = self._to_phrase(result, callsign, acknowledged=self.standby_ack)
 
@@ -227,6 +235,130 @@ class MDCManager:
             self._speak(phrase, summary)
         except Exception as e:
             self._log(f"MDC: could not queue audio ({e})")
+
+    # -- record tables ------------------------------------------------------ #
+
+    def _fetch_records(self, html: str, final_url: str) -> dict:
+        """Pull the DataTables rows for the record tables on a profile page."""
+        try:
+            targets = mdc_parser.find_populate_targets(html)
+        except Exception:
+            targets = None
+        if not targets:
+            return {}
+
+        import requests
+
+        base = final_url or self.name_url or ""
+        url = urljoin(base, targets["path"])
+        cookies = self.session.cookie_dict()
+        out = {
+            "available": False, "tables": {}, "rows": 0,
+            "felony": 0, "misdemeanor": 0, "infraction": 0, "samples": [],
+            "active_warrants": 0, "executed_warrants": 0, "warrant_items": [],
+            "warrants_read": False,
+        }
+        for kind in (targets.get("types") or [])[:5]:
+            params = {
+                "draw": 1, "start": 0, "length": 25,
+                "char": targets.get("char", ""),
+                "charName": targets.get("char_name", ""),
+                "type": kind,
+            }
+            try:
+                resp = requests.get(
+                    url,
+                    params=params,
+                    cookies=cookies,
+                    headers={
+                        "User-Agent": self.user_agent,
+                        "Accept": "application/json, text/javascript, */*",
+                        "X-Requested-With": "XMLHttpRequest",
+                    },
+                    timeout=self.timeout,
+                    allow_redirects=True,
+                )
+                if int(resp.status_code) != 200:
+                    self._log("MDC: %s returned %s." % (kind, resp.status_code))
+                    continue
+                parsed = mdc_parser.parse_populate_rows(resp.json(), kind)
+            except Exception as e:
+                self._log("MDC: could not read %s (%s)." % (kind, e))
+                continue
+            out["available"] = True
+            out["tables"][kind] = parsed
+            out["rows"] += parsed.get("rows", 0)
+            for key in ("felony", "misdemeanor", "infraction",
+                        "active_warrants", "executed_warrants"):
+                out[key] += parsed.get(key, 0)
+            if kind in (mdc_parser.ACTIVE_WARRANT_TABLE, mdc_parser.OLD_WARRANT_TABLE):
+                out["warrants_read"] = True
+            for w in parsed.get("warrant_items") or []:
+                if w not in out["warrant_items"] and len(out["warrant_items"]) < 3:
+                    out["warrant_items"].append(w)
+            for s in parsed.get("samples", []):
+                if len(out["samples"]) < 8:
+                    out["samples"].append("%s: %s" % (kind, s))
+        if out["available"]:
+            self._log(
+                "MDC: read %d record rows (%d felony, %d misdemeanor, %d infraction)."
+                % (out["rows"], out["felony"], out["misdemeanor"], out["infraction"])
+            )
+        return out
+
+    @staticmethod
+    def _records_text(records: dict) -> str:
+        """Render the rows for the AI, and stop it inventing a clean record."""
+        if not records or not records.get("available"):
+            return (
+                "\n\n=== CRIMINAL RECORD TABLES: NOT READ ===\n"
+                "The record tables could not be read this time. Do NOT say the "
+                "subject has no record or no criminal history. Say the criminal "
+                "history could not be confirmed and to check the MDC directly.\n"
+            )
+        lines = ["", "", "=== CRIMINAL RECORD TABLES READ FROM MDC (authoritative) ==="]
+        for kind, parsed in (records.get("tables") or {}).items():
+            lines.append(
+                "%s: %d rows (%d felony, %d misdemeanor, %d infraction)"
+                % (kind, parsed.get("rows", 0), parsed.get("felony", 0),
+                   parsed.get("misdemeanor", 0), parsed.get("infraction", 0))
+            )
+        for s in records.get("samples", []):
+            lines.append("  - " + s)
+        aw = int(records.get("active_warrants") or 0)
+        ew = int(records.get("executed_warrants") or 0)
+        if records.get("warrants_read"):
+            lines.append(
+                "WARRANTS: %d ACTIVE, %d already EXECUTED (history only)." % (aw, ew)
+            )
+            lines.append(
+                "An executed warrant is NOT active. Only say the subject is "
+                "wanted or 10-99 if the ACTIVE count above is 1 or more."
+            )
+        lines.append(
+            "These rows ARE the record. Only call the subject clean if every "
+            "table above shows 0 rows. Always read out any caution code."
+        )
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _merge_records(result: dict, records: dict) -> None:
+        if not isinstance(result, dict) or not records or not records.get("available"):
+            return
+        result["records_available"] = True
+        result["felony_count"] = records.get("felony", 0)
+        result["misdemeanor_count"] = records.get("misdemeanor", 0)
+        result["infraction_count"] = records.get("infraction", 0)
+        result["record_rows"] = records.get("rows", 0)
+        if records.get("rows", 0) == 0:
+            result["has_arrests"] = False
+        if records.get("warrants_read"):
+            active = int(records.get("active_warrants") or 0)
+            result["executed_warrants"] = int(records.get("executed_warrants") or 0)
+            result["has_warrants"] = active > 0
+            result["wanted"] = active > 0
+            if active and records.get("warrant_items"):
+                result["warrant_items"] = records["warrant_items"]
 
     def _fetch(self, url_template: str, target: str):
         q = quote(target)

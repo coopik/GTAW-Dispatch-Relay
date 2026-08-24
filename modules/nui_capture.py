@@ -355,6 +355,11 @@ class CaptureEngine:
         self._transport = None
         self._context_id = 0
         self._previous = []
+        # What we have already written, so a reconnect or a dropped poll can
+        # never replay old chat into the log the watcher is reading.
+        self._seen = set()
+        self._seen_order = []
+        self.repeats_skipped = 0
         self._stop = threading.Event()
         self._thread = None
         self._err_logged = ""
@@ -396,6 +401,8 @@ class CaptureEngine:
     def reset_baseline(self) -> None:
         """Forget what we have already seen (used when the log is cleared)."""
         self._previous = []
+        self._seen = set()
+        self._seen_order = []
 
     def available(self) -> bool:
         return self.attached
@@ -538,13 +545,50 @@ class CaptureEngine:
         except OSError as exc:
             raise CaptureError("cannot write %s: %s" % (self.output_path, exc))
 
+    SEEN_MEMORY = 1500
+
+    def _remember(self, sig: str) -> None:
+        self._seen.add(sig)
+        self._seen_order.append(sig)
+        if len(self._seen_order) > self.SEEN_MEMORY:
+            drop = self._seen_order[:-self.SEEN_MEMORY]
+            self._seen_order = self._seen_order[-self.SEEN_MEMORY:]
+            keep = set(self._seen_order)
+            for sig in drop:
+                if sig not in keep:
+                    self._seen.discard(sig)
+
+    def _unseen(self, lines, rerender: bool):
+        """Drop lines we have already written.
+
+        A line that carries its own HUD timestamp is safe to de-duplicate:
+        two genuinely separate transmissions will differ by the clock. Lines
+        with no timestamp are only de-duplicated when the window looks like a
+        re-render, so ordinary repeated chatter still gets through.
+        """
+        out = []
+        for line in lines:
+            sig = " ".join((line or "").split())
+            if sig in self._seen and (has_timestamp(line) or rerender):
+                self.repeats_skipped += 1
+                continue
+            self._remember(sig)
+            out.append(line)
+        return out
+
     def _append(self, visible) -> None:
         current = [ln for ln in visible if ln.strip()]
         if not current:
             return
         overlap = find_overlap(self._previous, current)
         fresh = current[overlap:]
+        # No overlap at all against a window we had already seen means the
+        # chat box was re-rendered, not that the whole screen is new chat.
+        rerender = bool(self._previous) and overlap == 0 and len(fresh) > 1
         self._previous = current
+        if not fresh:
+            return
+        fresh = self._unseen(fresh, rerender)
         if not fresh:
             return
 
