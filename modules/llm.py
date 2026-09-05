@@ -7,6 +7,47 @@ import re
 
 import requests
 
+# Street/district gazetteer with typo correction and RD numbers. Imported
+# defensively so the app still runs if the module is missing from a build.
+try:  # normal package import
+    from modules.geo import (
+        resolve_location as geo_resolve_location,
+        rd_phrase as geo_rd_phrase,
+    )
+except Exception:  # pragma: no cover
+    try:  # relative import (frozen builds)
+        from .geo import (
+            resolve_location as geo_resolve_location,
+            rd_phrase as geo_rd_phrase,
+        )
+    except Exception:
+        def geo_resolve_location(_raw):
+            return None
+
+        def geo_rd_phrase(_location):
+            return ""
+
+# Real LAPD RTOs say the location twice for clarity over a noisy radio
+# ("at Hawick and Spanish, Hawick and Spanish"). That is deliberate realism,
+# not a bug, so it is ON by default. Set llm.repeat_location: false in
+# config.yaml if you prefer the address stated once.
+_REPEAT_LOCATION = True
+
+
+def set_repeat_location(enabled: bool) -> None:
+    """Enable/disable the LAPD-style location repeat used by build_callout."""
+    global _REPEAT_LOCATION
+    _REPEAT_LOCATION = bool(enabled)
+
+
+def _repeat_for_air(loc: str) -> str:
+    """Apply the LAPD double-call to a location before it is read on the air.
+
+    NOTE: do not rename this to _spoken_location - that name is already taken
+    by an unrelated helper further down this module.
+    """
+    return f"{loc}, {loc}" if _REPEAT_LOCATION else loc
+
 _INCIDENTS: list[tuple[str, str]] = [
     (r"capital murder", "a 201 capital murder"),
     (r"first[- ]?degree murder", "a 202 first degree murder"),
@@ -196,6 +237,42 @@ _HIGH_RISK = re.compile(
 def _incident_last4(incident) -> str:
     digits = re.sub(r"\D", "", str(incident or ""))
     return digits[-4:] if digits else ""
+
+
+# --- Explicit priority ------------------------------------------------------
+# Every call-out ends with an explicit "Code 3" or "Code 2". The alert used to
+# be decided by re-scanning the finished speech with _HIGH_RISK, which matches
+# words like "burglary", "fire" or "crash" even on a cold Code 2 report - so
+# "priorities only" alerted on ordinary calls. Read the stated code instead.
+_CODE3_TOKEN_RE = re.compile(r"\bcode\s*(?:3|three)\b", re.I)
+_CODE2_TOKEN_RE = re.compile(r"\bcode\s*(?:2|two)\b", re.I)
+# Unambiguous "drop everything" phrases that outrank a stated code.
+_OVERRIDE_PRIORITY_RE = re.compile(
+    r"\bshots?\s+fired\b|\bofficer\s+(?:down|needs?\s+help)\b|"
+    r"\bin\s+distress\b|\bpanic\s+(?:button|alarm)\b|\b998\b|\b999\b|"
+    r"\bhelp\s+call\b|\bcode\s*(?:6|six)\s*charles\b",
+    re.I,
+)
+
+
+def dispatch_priority(text: str):
+    """
+    Was this dispatch broadcast as a priority?
+
+    Returns True (priority), False (routine) or None (no code stated).
+    Callers decide what None means; the alert treats it as NOT a priority so
+    "priorities only" can never fire on an unclassified line.
+    """
+    if not text:
+        return None
+    if _OVERRIDE_PRIORITY_RE.search(text):
+        return True
+    # Check Code 3 first: "Code 3" wins if both somehow appear.
+    if _CODE3_TOKEN_RE.search(text):
+        return True
+    if _CODE2_TOKEN_RE.search(text):
+        return False
+    return None
 
 
 _CODE3_TERMS = re.compile(
@@ -484,6 +561,22 @@ def build_callout(
     if not loc:
         loc = _extract_location(t)
 
+    # Correct caller typos against the GTA V gazetteer before anything is
+    # spoken, e.g. "Little Soeul" -> "Little Seoul", "Vinwood Blvd" ->
+    # "Vinewood Boulevard". Also gives us a stable RD for the location.
+    rd_phrase = ""
+    if loc:
+        try:
+            resolved = geo_resolve_location(loc)
+        except Exception:
+            resolved = None
+        if resolved and resolved.get("spoken"):
+            loc = resolved["spoken"]
+        try:
+            rd_phrase = geo_rd_phrase(loc) or ""
+        except Exception:
+            rd_phrase = ""
+
     code = _decide_code(low, incident_phrase)
     code_str = "Code 3 emergency" if code == "Code 3" else code
     closing = _next_closing()
@@ -491,22 +584,29 @@ def build_callout(
     last4 = _incident_last4(incident)
     sec = _incident_number(incident_phrase)
     label = _incident_label(incident_phrase)
-    where = f"at {loc}, {loc}" if loc else None
+    # LAPD repeats the address for clarity over the radio. Controlled by
+    # llm.repeat_location (default true).
+    spoken_loc = _repeat_for_air(loc) if loc else None
+    where = f"at {spoken_loc}" if loc else None
 
     if sec:
         head = f"All units, {label} {where}." if where else f"All units, {label}. Be advised, {_CAD_FALLBACK}."
     elif incident_phrase:
         head = f"All units, we have {incident_phrase} {where}." if where else f"All units, we have {incident_phrase}. Be advised, {_CAD_FALLBACK}."
     else:
-        head = f"All units, respond to {loc}, {loc}." if where else f"All units, be advised. {_CAD_FALLBACK.capitalize()}."
+        head = f"All units, respond to {spoken_loc}." if where else f"All units, be advised. {_CAD_FALLBACK.capitalize()}."
 
     parts = [head]
     if narrative:
         parts.append(f"{_next_rp_lead()} {narrative}.")
     if incident_phrase in _EMS_PHRASES:
         parts.append("Requesting a rescue ambulance.")
+    # Real LAPD broadcasts close with the incident number and the RD, in that
+    # order: "... Incident 171 in RD 193."
     if last4:
         parts.append(f"Incident {_spell_digits(last4)}.")
+    if rd_phrase:
+        parts.append(f"{rd_phrase}.")
     parts.append(f"{code_str}.")
     if tac and code == "Code 3" and _PRIORITY.search(f"{low} {incident_phrase or ''}"):
         parts.append("Refer to TAC-1.")
@@ -857,6 +957,19 @@ _DEFAULT_LAPD_PROMPT = (
     "third-person summary of what the reporting party states. End with a closing "
     "such as 'Units responding, identify.' or 'Any unit to handle, identify.'\n"
     "\n"
+    "REPORTING DISTRICT (RD) - MANDATORY ON EVERY 911 CALL WITH A LOCATION: "
+    "real LAPD broadcasts close with the incident number and the reporting "
+    "district, e.g. 'Incident 171 in RD 193.' You MUST do the same. Rules:\n"
+    "- Always say the letters 'R D'. NEVER say the words 'reporting district'.\n"
+    "- The RD is ALWAYS exactly FOUR digits. Never three, never five.\n"
+    "- Speak it in natural two-and-two pairs, NOT as four separate digits: "
+    "1313 -> 'R D, thirteen thirteen'; 4051 -> 'R D, forty fifty one'; "
+    "2010 -> 'R D, twenty ten'; 0105 -> 'R D, oh one oh five'.\n"
+    "- Place it immediately after the incident number, before the response code.\n"
+    "- If an RD is supplied to you in the input, use EXACTLY that one. Only "
+    "invent a plausible four-digit RD when none is supplied, and keep the same "
+    "RD for the same location.\n"
+    "\n"
     "RESPONSE CODE - CRITICAL, JUDGE THE SEVERITY:\n"
     "- Code 3 (lights and sirens, emergency) for ANY threat to life or violent "
     "crime in progress: shooting or shots fired, weapons, robbery, assault or "
@@ -905,7 +1018,18 @@ _STYLE_ADDENDUM = (
     "economical. No filler, no drama, and never narrate your own actions.\n"
     "- Say the location the way LAPD does, repeating it once for clarity, for "
     "example: 'at Hawick and Spanish, Hawick and Spanish.' Repeat a unit's call "
-    "sign the same way when you direct a specific unit.\n"
+    "sign the same way when you direct a specific unit ('1 Adam 12, 1 Adam 12'). "
+    "This double-call is standard LAPD radio practice, not a mistake.\n"
+    "- Do NOT identify yourself by name or as 'Dispatch speaking'. An LAPD RTO "
+    "addresses the unit and then talks; the RTO is never named on the air.\n"
+    "- Units request tactical channels through Control, so say 'refer to TAC-1', "
+    "never 'switch to TAC-1 now'.\n"
+    "- Correct spelling of GTA V street and district names even when the caller "
+    "misspells them: read the real name ('Little Seoul', not 'Little Soeul').\n"
+    "- DELIVERY: flat, even, unhurried, identical on every call. Do NOT act "
+    "excited, do NOT use exclamation marks, and do NOT write in capitals - a real "
+    "RTO reads a homicide in the same bored monotone as a parking complaint. "
+    "Emotional punctuation makes the voice engine speed up and change pitch.\n"
     "- Refer to the caller as 'the RP' or 'reporting party'. If more than one "
     "person is calling it in, say 'multiple RPs reporting'. Never read names or "
     "phone numbers.\n"
@@ -950,6 +1074,9 @@ class LLMProcessor:
         self.reasoning_effort = str(cfg.get("reasoning_effort", "low") or "low").lower()
         self.emergency_only = bool(cfg.get("emergency_only", True))
         self.tac_referral = bool(cfg.get("tac_referral", True))
+        # LAPD-style "at <loc>, <loc>" double-call. On by default (realism).
+        self.repeat_location = bool(cfg.get("repeat_location", True))
+        set_repeat_location(self.repeat_location)
 
     @staticmethod
     def _format_call_input(incident: str | None, situation: str, location: str | None) -> str:
@@ -993,6 +1120,7 @@ class LLMProcessor:
                 flag.get("location"),
                 flag.get("details"),
                 flag.get("needs"),
+                bool(flag.get("priority")),
             )
         if isinstance(flag, dict) and flag.get("type") == "clear":
             if flag.get("start_of_watch"):
@@ -1017,7 +1145,14 @@ class LLMProcessor:
             )
         if isinstance(flag, dict) and flag.get("type") == "radio":
             body = flag.get("body", "")
-            offline = build_radio_dispatch(body, flag.get("callsign"))
+            offline = build_radio_dispatch(
+                body,
+                flag.get("callsign"),
+                flag.get("location"),
+                flag.get("needs"),
+                flag.get("priority"),
+                flag.get("incident_label"),
+            )
             if self.enabled and self.api_key:
                 out = self._api_rewrite(
                     "Unit radio transmission on the base channel. This is NOT a "
@@ -1028,7 +1163,9 @@ class LLMProcessor:
                     "'I need' is 'you need', 'me' is 'you'.\n" + body
                 )
                 if out:
-                    return scrub_dispatch_voice(out)
+                    return scrub_dispatch_voice(
+                        _ensure_rd(out, flag.get("location"))
+                    )
             return offline
 
         if isinstance(flag, dict) and flag.get("type") == "call":
@@ -1042,7 +1179,9 @@ class LLMProcessor:
                 user = self._format_call_input(incident, situation, location)
                 out = self._api_rewrite(user)
                 if out:
-                    return out
+                    # Test Voice and every real 911 call keep the reporting
+                    # district even when the model paraphrases the call-out.
+                    return _ensure_rd(out, location)
             return offline if self.enabled else _strip_phone(situation)
 
         body = flag.get("body") if isinstance(flag, dict) else str(flag)
@@ -1212,6 +1351,29 @@ _PHONETIC = {
 }
 
 
+# Players type call signs either packed ("2A55") or already spelled out
+# ("2 Adam 55").  Without this map the spelled-out form gets exploded back into
+# single letters and read as "Adam David Adam Mary".  NATO words are folded onto
+# the LAPD word for the same letter, so "2 Alpha 55" is still read "two Adam
+# fifty-five".
+_SPOKEN_WORD_TO_LETTER = {
+    "adam": "a", "boy": "b", "charles": "c", "charlie": "c", "david": "d",
+    "edward": "e", "frank": "f", "george": "g", "henry": "h", "ida": "i",
+    "john": "j", "king": "k", "lincoln": "l", "mary": "m", "nora": "n",
+    "ocean": "o", "paul": "p", "queen": "q", "robert": "r", "sam": "s",
+    "tom": "t", "union": "u", "victor": "v", "william": "w", "xray": "x",
+    "young": "y", "zebra": "z",
+    "alpha": "a", "bravo": "b", "delta": "d", "echo": "e", "foxtrot": "f",
+    "golf": "g", "hotel": "h", "india": "i", "juliet": "j", "juliett": "j",
+    "kilo": "k", "lima": "l", "mike": "m", "november": "n", "oscar": "o",
+    "papa": "p", "quebec": "q", "romeo": "r", "sierra": "s", "tango": "t",
+    "uniform": "u", "whiskey": "w", "yankee": "y", "zulu": "z",
+}
+
+# A trailing K9 marks a canine unit ("R30K9" -> "Robert thirty K nine").
+_TRAILING_K9_RE = re.compile(r"^(.*?)[\s\-]?(?:k[\s\-]?9|canine)$", re.I)
+
+
 _PLATE_KEYWORD_RE = re.compile(
     r"(?i)\b(index|plate|plates|registration|reg|tag|licen[cs]e(?:\s+plate)?)\b"
     r"(\s*(?:number|no\.?|#)?\s*[:\-]?\s+)"
@@ -1281,14 +1443,54 @@ def _number_to_words(num: int) -> str:
     return " ".join(_ONES[int(d)] for d in str(n))
 
 
+_SPOKEN_NUM_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+    "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+    "twenty": 20,
+}
+_K9_CALLSIGN_RE = re.compile(
+    r"^(?:k[- ]?9|canine)[- ]?(?:ch(?:annel)?[- ]?)?(.*)$", re.I
+)
+
+
 def phonetic_callsign(callsign: str) -> str:
-    tokens = re.findall(r"\d+|[A-Za-z]", str(callsign).strip())
+    raw = str(callsign or "").strip()
+    # Canine units are read "K nine", never "King nine" or "Kilo nine", and
+    # "K9 one" must not be spelled out letter by letter as Ocean-Nora-Edward.
+    m9 = _K9_CALLSIGN_RE.match(raw)
+    if m9:
+        rest = m9.group(1).strip().lower()
+        if not rest:
+            return "K nine"
+        if rest.isdigit():
+            return "K nine " + _number_to_words(int(rest))
+        if rest in _SPOKEN_NUM_WORDS:
+            return "K nine " + _number_to_words(_SPOKEN_NUM_WORDS[rest])
+        return ("K nine " + rest).strip()
+    # Canine suffix on a supervisor sign: read the stem, then "K nine".
+    mt = _TRAILING_K9_RE.match(raw)
+    if mt and mt.group(1).strip():
+        return (phonetic_callsign(mt.group(1)) + " K nine").strip()
+
+    # Whole letter runs, not single characters, so an already spelled-out word
+    # survives instead of being re-spelled letter by letter.
+    tokens = re.findall(r"\d+|[A-Za-z]+", raw)
     out: list[str] = []
     for tok in tokens:
         if tok.isdigit():
             out.append(_number_to_words(int(tok)))
+            continue
+        low = tok.lower()
+        letter = _SPOKEN_WORD_TO_LETTER.get(low)
+        if letter:
+            out.append(_PHONETIC[letter])
+        elif len(low) == 1:
+            out.append(_PHONETIC.get(low, tok.upper()))
         else:
-            out.append(_PHONETIC.get(tok.lower(), tok.upper()))
+            # An unrecognised run such as "RS" really is spelled out.
+            out.extend(_PHONETIC.get(ch, ch.upper()) for ch in low)
     return " ".join(out)
 
 
@@ -1479,20 +1681,126 @@ def strip_ten_codes(text: str) -> str:
     return out.strip(" ,;:")
 
 
-def build_radio_dispatch(text: str, callsign: str | None = None) -> str:
-    return scrub_dispatch_voice(_build_radio_dispatch(text, callsign))
+def _ensure_rd(text: str, location: str | None) -> str:
+    """Reporting districts are deterministic, but a model rewrite paraphrases
+    freely and routinely drops ours. Put it back when the rewrite lost it."""
+    if not text or not location:
+        return text
+    if re.search(r"\bR\.?\s?D\b", text, re.I):
+        return text
+    try:
+        rd = geo_rd_phrase(location) or ""
+    except Exception:
+        rd = ""
+    if not rd:
+        return text
+    return text.rstrip().rstrip(".") + f". {rd}."
 
 
-def _build_radio_dispatch(text: str, callsign: str | None = None) -> str:
+def _build_intent_dispatch(
+    unit: str,
+    location: str | None,
+    needs: str | None,
+    priority: bool | None,
+    incident: str | None,
+) -> str:
+    """Broadcast for unit traffic the intent reader understood. Names the
+    incident, the location, the reporting district and the response code,
+    instead of parroting the unit's own words back at it."""
+    who = unit or "a unit"
+    loc = _to_unit_voice(location) if location else None
+    where = f" at {_repeat_for_air(loc)}" if loc else ""
+    rd = ""
+    if location:
+        try:
+            rd = geo_rd_phrase(location) or ""
+        except Exception:
+            rd = ""
+    ask = str(needs or "").lower()
+    hot = bool(priority) or ask == "backup"
+
+    parts: list[str] = []
+    if incident and ask == "backup":
+        parts.append(
+            f"All units, {who} reports {incident}{where} and is requesting backup."
+        )
+    elif incident and ask == "additional":
+        parts.append(
+            f"All units, {who} reports {incident}{where}, requesting an "
+            f"additional unit."
+        )
+    elif incident:
+        parts.append(f"All units, {who} reports {incident}{where}.")
+    elif ask == "backup":
+        parts.append(
+            f"All units, {who} is requesting backup"
+            f"{where or ', refer to CAD for location'}."
+        )
+    elif ask == "additional":
+        parts.append(
+            f"Additional unit requested for {who}"
+            f"{where or ', refer to CAD for location'}."
+        )
+    else:
+        parts.append(f"All units, {who}{where}.")
+    if rd:
+        parts.append(f"{rd}.")
+    if hot:
+        parts.append("Code 3, respond emergency and identify.")
+    else:
+        parts.append("Any available unit to handle, Code 2, identify.")
+    return " ".join(parts)
+
+
+def build_radio_dispatch(
+    text: str,
+    callsign: str | None = None,
+    location: str | None = None,
+    needs: str | None = None,
+    priority: bool | None = None,
+    incident: str | None = None,
+) -> str:
+    return scrub_dispatch_voice(
+        _build_radio_dispatch(text, callsign, location, needs, priority, incident)
+    )
+
+
+def _build_radio_dispatch(
+    text: str,
+    callsign: str | None = None,
+    location: str | None = None,
+    needs: str | None = None,
+    priority: bool | None = None,
+    incident: str | None = None,
+) -> str:
     raw = _clean_ocr(text)
     low = raw.lower()
     unit = phonetic_callsign(callsign) if callsign else ""
     unit_str = f"{unit}, " if unit else ""
-    loc = radio_location(raw)
-    if loc:
-        loc = _to_unit_voice(loc)
+    # Prefer the gazetteer-corrected location the intent reader already found,
+    # and only fall back to scraping it out of the raw text. Scraping turned
+    # "fleeing on foot on Calais Avenue" into "foot on Calais Avenue".
+    best_loc = location or radio_location(raw)
+    loc = _to_unit_voice(best_loc) if best_loc else None
     loc_str = f" at {loc}" if loc else ""
     loc_or_cad = f" at {loc}" if loc else ", refer to CAD for location"
+    rd_str = ""
+    if best_loc:
+        try:
+            _rd = geo_rd_phrase(best_loc) or ""
+            rd_str = f" {_rd}." if _rd else ""
+        except Exception:
+            rd_str = ""
+
+    # Officer-distress and pursuit wording still wins, because those are the
+    # loudest calls on the air. Otherwise, when the intent reader graded this
+    # transmission, broadcast the graded version: it knows the incident, the
+    # place, and whether backup or an additional unit was asked for.
+    if not _OFFICER_DISTRESS.search(low) and not _PURSUIT_RE.search(low):
+        if incident or needs:
+            return _build_intent_dispatch(
+                unit, location or loc, needs, priority, incident
+            )
 
     if _OFFICER_DISTRESS.search(low):
         who = unit or "a unit"
@@ -1500,20 +1808,20 @@ def _build_radio_dispatch(text: str, callsign: str | None = None) -> str:
         if re.search(r"shots fired", low):
             return (
                 f"All units, all units. Shots fired, shots fired. {who}"
-                f"{where}. All units in the vicinity, respond Code 3. "
+                f"{where}.{rd_str} All units in the vicinity, respond Code 3. "
                 f"Additional units and an air unit refer to TAC-1. "
                 f"Units responding, identify."
             )
         return (
-            f"All units, all units. Officer in distress, {who}{where}. "
+            f"All units, all units. Officer in distress, {who}{where}.{rd_str} "
             f"All available units respond Code 3. Refer to TAC-1. "
             f"Units responding, identify."
         )
     if _PURSUIT_RE.search(low):
         return (
-            f"All units, {unit_str}in pursuit{loc_str}. Clear the channel, this is "
-            f"now a priority. Air unit and additional ground units refer to TAC-1. "
-            f"Units to assist, identify."
+            f"All units, {unit_str}in pursuit{loc_str}.{rd_str} Clear the channel, "
+            f"this is now a priority, Code 3. Air unit and additional ground units "
+            f"refer to TAC-1. Units to assist, identify."
         )
     if _CODE6_RE.search(low):
         base = f"Control copies, {unit_str}code six{loc_or_cad}."
@@ -1607,12 +1915,23 @@ _CODE_SIX_ASSIST_ACKS = [
     "{unit}{where}, Code 2.",
 ]
 
+# BACKUP is an emergency request, not an additional unit: Code 3, and the
+# broadcast goes to everybody rather than "any available unit".
+_CODE_SIX_BACKUP_ACKS = [
+    "All units, backup requested for {unit}{where}. Code 3, respond emergency "
+    "and identify.",
+    "Any available unit, backup for {unit}{where}, Code 3. Identify.",
+    "All units, {unit} is requesting backup{where}. Code 3, units responding, "
+    "identify.",
+]
+
 
 def build_code_six_ack(
     callsign: str | None = None,
     location: str | None = None,
     details: str | None = None,
     needs: str | None = None,
+    priority: bool = False,
 ) -> str:
     unit = phonetic_callsign(callsign) if callsign else "Unit"
     opener = random.choice(_CODE_SIX_OPENERS)
@@ -1627,9 +1946,10 @@ def build_code_six_ack(
             tail = f", {d}"
     if needs:
         where = f" at {loc}" if loc else ""
-        assist = random.choice(_CODE_SIX_ASSIST_ACKS).format(
-            unit=unit, where=where
-        )
+        # Backup (or an emergency stated inside the code six) is Code 3.
+        hot = bool(priority) or str(needs).lower() == "backup"
+        pool = _CODE_SIX_BACKUP_ACKS if hot else _CODE_SIX_ASSIST_ACKS
+        assist = random.choice(pool).format(unit=unit, where=where)
         return f"Copy {unit}, {opener}{loc_str}{tail}. {assist}"
     closer = random.choice(_CODE_SIX_CLOSERS)
     return f"Copy {unit}, {opener}{loc_str}{tail}.{closer}".rstrip()

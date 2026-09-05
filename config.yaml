@@ -77,7 +77,52 @@ flagging:
     scope: own             # "own" = only your call signs; "all" = any unit going out to / out at
   alarms:
     enabled: true          # flag property alarm traffic (silent, audible, burglary, commercial, residential) and put out a call
-    vehicle: false         # ALSO flag vehicle alarms posted in chat by a security firm (model + last known location) and read them out
+    vehicle: true          # ALSO flag vehicle alarms posted in chat by a security firm.
+                           # Format read: "Security Firm: vehicle alarm was set off on
+                           # <place> closest street: <street>". The vehicle MODEL is now
+                           # reported as the vehicle, never as the location.
+
+# ---------------------------------------------------------------------------
+# BRAIN - decides what actually deserves radio traffic.
+#
+# The flagger finds candidates; the brain decides whether a candidate is a real
+# incident. It scores each one on weapons, violence, medical, fire, in-progress
+# wording and whether a location was given, then subtracts points for
+# out-of-character chatter, tests/pranks, hang-ups and information requests.
+# It is fully offline and deterministic, so it costs no tokens and no latency.
+#
+# Unit traffic (code 6, panic, CAD, clear, code 7, OPG, EOW, out, MDC, alarms)
+# always bypasses the brain, because your scope settings above already decided
+# whether you wanted to hear it.
+# ---------------------------------------------------------------------------
+brain:
+  enabled: true
+  threshold: 18            # score a call must reach to be broadcast. Raise it (25-35)
+                           # if the AI still reads things you consider noise; lower it
+                           # (10-15) if it is skipping calls you wanted.
+  priority_threshold: 50   # score at/above which a call counts as a priority
+  repeat_window_sec: 120   # drop a re-report of the same incident within this window
+  require_location: false  # true = never broadcast a call with no usable location
+  min_letters: 12          # ignore anything shorter than this many letters
+  log_decisions: false     # true = log every suppression and why (great for tuning)
+
+# ---------------------------------------------------------------------------
+# GEO - GTA V street, district and landmark gazetteer.
+#
+# Fixes caller typos before anything is spoken, so "Little Soeul" is read as
+# "Little Seoul" and "Vinwood Blvd" as "Vinewood Boulevard". It also generates
+# the RD (reporting district) that closes each call-out.
+#
+# RDs are invented but STABLE: the same location always gets the same 4-digit
+# RD, and it is always spoken as "R D" - never "reporting district".
+# ---------------------------------------------------------------------------
+geo:
+  enabled: true
+  correct_typos: true      # fuzzy-match caller locations to the real street list
+  threshold: 0.78          # 0-1 match confidence needed to correct a name. Raise it to
+                           # 0.85 to only fix near-perfect typos; lower to 0.70 to be
+                           # more aggressive (risks the wrong street).
+  speak_rd: true           # append "R D, thirteen thirteen" style to every 911 call-out
 
 llm:
   enabled: true
@@ -90,6 +135,7 @@ llm:
   api_key: ''             # optional; leave blank to use the built-in offline LAPD generator
   timeout: 20
   emergency_only: true    # never run TTS on non-emergency / landline calls
+  repeat_location: true   # LAPD realism: the RTO says the address twice for clarity over the radio ("at Grove Street, Grove Street"). Set to false to state it once.
   system_prompt: >-
     You are a veteran LAPD Radio Telephone Operator (RTO / dispatcher) working a
     GTA World roleplay server that uses the San Andreas Penal Code. Convert the
@@ -134,8 +180,19 @@ llm:
     Vary your closing so you do not end every call the same way.
 
 tts:
-  provider: edge           # edge = FREE neural voice (no key); pyttsx3 = offline; elevenlabs | google. Auto-falls back edge -> pyttsx3.
+  provider: edge           # edge = FREE neural voice (no key); pyttsx3 = offline; elevenlabs | google.
   speak_digits: true       # speak numbers digit-by-digit ("nine one one", not "nine hundred eleven")
+
+  # --- Voice consistency -------------------------------------------------
+  # These three settings are why the voice used to change character mid-shift.
+  allow_fallback: true     # true = if your provider fails, silently use edge -> pyttsx3.
+                           # Those are DIFFERENT voices, so a failing ElevenLabs key
+                           # made the dispatcher sound calm on one call and robotic on
+                           # the next. Set to FALSE to pin one voice: if it fails you
+                           # get a clear log line instead of a different voice.
+  normalize_audio: true    # match the loudness of every call-out (stops volume jumps)
+  output_sample_rate: 24000 # resample every provider to one rate, so pitch can never
+                           # shift (this is what caused the "chipmunk" voice)
   edge:
     voice: en-US-AriaNeural
     rate: "+0%"
@@ -144,11 +201,21 @@ tts:
     rate: 175
     voice_contains: zira
   elevenlabs:
-    api_key: 759c2bab7710a0e017d0f733e00f4050656644af0cd54588373afcfdfae3c5f1
+    # Leave BLANK and set the ELEVENLABS_API_KEY environment variable instead,
+    # so your key never ends up in a shared config file or a zip.
+    api_key: ''
     voice_id: pYduSEMlSc5NZ5UXU4aO
     model_id: eleven_turbo_v2
-    stability: 0.5
+    # stability 0.85 keeps the delivery FLAT and repeatable. The old 0.5 let
+    # ElevenLabs re-act the emotion of every request, which is why the same
+    # dispatcher sounded bored on one call and frantic on the next.
+    stability: 0.85
     similarity_boost: 0.75
+    style: 0.0             # 0 = no emotional exaggeration. Keep it at 0.
+    use_speaker_boost: true
+    speed: 1.0             # 0.7 - 1.2. Fixed, so the pace never drifts.
+    seed: 20250905         # fixed seed = near-identical delivery every time
+    timeout: 30
   google:
     credentials_json: ''
     language_code: en-US
@@ -172,7 +239,12 @@ playback:
 
 alert:
   enabled: true
-  scope: all               # "all" = play alert before every call-out; "priorities" = only urgent Code 3 / officer-in-distress calls
+  # "all"        = play the alert tone before every call-out
+  # "priorities" = ONLY on Code 3 / officer-in-distress calls.
+  # The priority is now taken from the code the dispatcher actually broadcast
+  # (Code 3 vs Code 2), not guessed from the wording, so "priorities" no
+  # longer fires on ordinary Code 2 property calls.
+  scope: all
   path: assets/dispatch_alert.wav
   volume: 0.9
   gap_ms: 150
@@ -210,11 +282,14 @@ updates:
   check_on_start: true     # check quietly when the app opens
   manifest_url: https://api.github.com/repos/coopik/GTAW-Dispatch-Relay/releases/latest
   allow_prerelease: false  # also offer pre-release builds
+  allow_reinstall: true   # Re-install the newest published build even when its version matches yours (re-released tags).
   timeout: 15
 
 reporting:
   enabled: true            # allow sending bug reports (and auto-detected errors) to the developer
-  webhook_url: https://discord.com/api/webhooks/1527758313704521788/LeZdaObHQbFKAd1DcotqtqMqX5MnfZzBK9MZGcRs7HJcPVVVVkScUatSwGNdFaXMwfwO
+  # Leave BLANK and set the DISPATCH_RELAY_WEBHOOK environment variable
+  # instead, so your webhook never ends up in a shared config file or a zip.
+  webhook_url: ''
   report_system_errors: true  # also forward errors the app detects on its own
   user_cooldown_sec: 60    # minimum seconds between manual bug reports (anti-spam)
   error_cooldown_sec: 120  # minimum seconds between repeats of the same auto-detected error

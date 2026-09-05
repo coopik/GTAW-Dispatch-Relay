@@ -57,6 +57,10 @@ class Updater:
         self.manifest_url = self.normalize_url(u.get("manifest_url", ""))
         self.check_on_start = bool(u.get("check_on_start", True))
         self.allow_prerelease = bool(u.get("allow_prerelease", False))
+        # Re-publishing a rebuilt v1.6.0 is a normal way to ship a fix, but a
+        # plain version compare calls that "up to date" and refuses to install.
+        # Manual checks therefore also offer to reinstall the same version.
+        self.allow_reinstall = bool(u.get("allow_reinstall", True))
         self.timeout = float(u.get("timeout", 15) or 15)
         self.app_version = str(app_version or "")
         self._log = log or (lambda *_a, **_k: None)
@@ -164,7 +168,7 @@ class Updater:
             pass
         return "GitHub is rate limiting update checks right now." + left
 
-    def check(self):
+    def check(self, force: bool = False):
         if not self.configured():
             if requests is None:
                 return False, None, "Update checks need the requests package."
@@ -183,13 +187,21 @@ class Updater:
             return False, None, "Update information could not be read: %s" % exc
         if info is None:
             return False, None, "No installer was published with the latest release."
-        if is_newer(info.version, self.app_version) and not info.url:
-            return True, info, ("Version %s is available, but that release has no "
+        newer = is_newer(info.version, self.app_version)
+        same = parse_version(info.version) == parse_version(self.app_version)
+        # A rebuilt release under the SAME version tag still has to be
+        # installable, otherwise "Update" reports success and changes nothing.
+        offer = newer or (same and (force or self.allow_reinstall))
+        if offer and not info.url:
+            return True, info, ("Version %s is published, but that release has no "
                                 "installer attached - open the release page to get it."
                                 % info.version)
-        if not is_newer(info.version, self.app_version):
-            return False, info, "You are up to date."
-        return True, info, "Version %s is available." % info.version
+        if newer:
+            return True, info, "Version %s is available." % info.version
+        if offer:
+            return True, info, ("You already have %s. This will reinstall the "
+                                "latest published build of it." % info.version)
+        return False, info, "You are up to date."
 
     def _parse(self, data):
         if isinstance(data, list):

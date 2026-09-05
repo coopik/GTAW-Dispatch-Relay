@@ -39,14 +39,87 @@ def verbalize_numbers(text: str) -> str:
 
 _SPEAK_STRIP = re.compile(r"[|\\/\[\]{}<>~^_=+*#@]+")
 
+# A dispatcher reads every call in the same flat, bored monotone. Neural voices
+# do the opposite: they act the punctuation. "!!!" and SHOUTED WORDS make
+# ElevenLabs and Edge speed up and get excited, which is why the same app
+# sounded calm on one call and frantic on the next. Flatten those cues.
+_EXCLAIM_RE = re.compile(r"!+")
+_QUESTION_RUN_RE = re.compile(r"\?{2,}")
+_ELLIPSIS_RE = re.compile(r"\.{2,}")
+_DASH_RUN_RE = re.compile(r"\s*--+\s*")
+_CAPS_WORD_RE = re.compile(r"\b(?![AI]\b)[A-Z]{3,}\b")
+# Words we must NOT de-capitalise: radio alphabet + codes read as letters.
+_KEEP_CAPS = {
+    "RD", "TAC", "EMS", "LAPD", "LASD", "PD", "FD", "ADW", "GTA", "DUI",
+    "BOLO", "APB", "RP", "AKA", "ETA", "CHP", "SWAT", "K9", "MDC", "MDT",
+}
+
+
+def _flatten_caps(match: "re.Match") -> str:
+    word = match.group(0)
+    if word in _KEEP_CAPS:
+        return word
+    return word.capitalize()
+
 
 def clean_for_speech(text: str) -> str:
+    """Normalise text so the voice delivery stays flat and consistent."""
     if not text:
         return text
     t = _SPEAK_STRIP.sub(" ", text)
     t = re.sub(r"\s*&\s*", " and ", t)
+    # Kill emotional punctuation - a period keeps the cadence even.
+    t = _EXCLAIM_RE.sub(".", t)
+    t = _QUESTION_RUN_RE.sub("?", t)
+    t = _ELLIPSIS_RE.sub(".", t)
+    t = _DASH_RUN_RE.sub(", ", t)
+    # SHOUTING -> normal case, so the voice stops "performing" it.
+    t = _CAPS_WORD_RE.sub(_flatten_caps, t)
+    t = re.sub(r"\s+([,.;:!?])", r"\1", t)
     t = re.sub(r"\s+", " ", t).strip()
     return t
+
+
+# --- Output conditioning ----------------------------------------------------
+# Every provider returns a different sample rate and a different loudness.
+# Normalising both is what stops the "sometimes chipmunks, sometimes quiet,
+# sometimes blown out" behaviour operators reported.
+OUTPUT_SR = 24000
+_TARGET_RMS = 0.08
+_PEAK_CEILING = 0.97
+
+
+def resample_to(samples: np.ndarray, sr: int, target_sr: int = OUTPUT_SR):
+    """Linear resample. Guarantees pitch is never shifted by a rate mismatch."""
+    if samples is None or len(samples) == 0:
+        return np.zeros(0, dtype=np.float32), target_sr
+    if not sr or sr <= 0 or sr == target_sr:
+        return samples.astype(np.float32), target_sr or sr
+    duration = len(samples) / float(sr)
+    n_out = max(1, int(round(duration * target_sr)))
+    src_idx = np.linspace(0.0, len(samples) - 1, num=n_out, dtype=np.float64)
+    out = np.interp(src_idx, np.arange(len(samples), dtype=np.float64), samples)
+    return out.astype(np.float32), target_sr
+
+
+def normalize_loudness(samples: np.ndarray) -> np.ndarray:
+    """Bring every call-out to the same perceived level, then guard the peak."""
+    if samples is None or len(samples) == 0:
+        return np.zeros(0, dtype=np.float32)
+    x = np.nan_to_num(samples.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    # Measure RMS over the parts that actually contain speech.
+    active = x[np.abs(x) > 0.005]
+    rms = float(np.sqrt(np.mean(np.square(active)))) if active.size else 0.0
+    if rms > 1e-6:
+        gain = _TARGET_RMS / rms
+        # Cap amplification so silence/hiss is not boosted into a roar, but
+        # allow deep attenuation so a hot take is brought fully back in line.
+        gain = float(np.clip(gain, 0.05, 8.0))
+        x = x * gain
+    peak = float(np.max(np.abs(x))) if x.size else 0.0
+    if peak > _PEAK_CEILING:
+        x = x * (_PEAK_CEILING / peak)
+    return x.astype(np.float32)
 
 
 def _ensure_ffmpeg() -> None:
@@ -111,6 +184,10 @@ class TTSEngine:
         cfg = cfg or {}
         self.provider = cfg.get("provider", "edge")
         self.speak_digits = bool(cfg.get("speak_digits", True))
+        # Consistency controls (see synthesize / normalize_loudness).
+        self.allow_fallback = bool(cfg.get("allow_fallback", True))
+        self.normalize = bool(cfg.get("normalize_audio", True))
+        self.output_sr = int(cfg.get("output_sample_rate", OUTPUT_SR) or OUTPUT_SR)
         self.cfg = cfg
         self._gclient = None
         self._gtts = None
@@ -128,11 +205,27 @@ class TTSEngine:
         text = clean_for_speech(text)
         if self.speak_digits:
             text = verbalize_numbers(text)
-        order = [self.provider] + [p for p in self._FALLBACK_ORDER if p != self.provider]
+
+        # Silently hopping between three different engines is the single
+        # biggest reason the voice "changed tone" mid-shift: ElevenLabs is a
+        # calm neural voice, Edge is a different neural voice, and pyttsx3 is
+        # a robotic SAPI voice. Operators can now pin the provider.
+        if self.allow_fallback:
+            order = [self.provider] + [
+                p for p in self._FALLBACK_ORDER if p != self.provider
+            ]
+        else:
+            order = [self.provider]
+
         last_err: Exception | None = None
         for prov in order:
             try:
-                out = self._synthesize_with(prov, text)
+                samples, sr = self._synthesize_with(prov, text)
+                # One sample rate and one loudness for every provider, so the
+                # pitch can never shift and the level never jumps.
+                samples, sr = resample_to(samples, sr, self.output_sr)
+                if self.normalize:
+                    samples = normalize_loudness(samples)
                 if getattr(self, "_active_provider", None) != prov:
                     self._active_provider = prov
                     if prov != self.provider:
@@ -143,10 +236,19 @@ class TTSEngine:
                         )
                     else:
                         print(f"[tts] voice provider: '{prov}'")
-                return out
+                return samples, sr
             except Exception as e:
                 last_err = e
-                print(f"[tts] provider '{prov}' unavailable ({e}); trying fallback...")
+                if self.allow_fallback:
+                    print(
+                        f"[tts] provider '{prov}' unavailable ({e}); trying fallback..."
+                    )
+                else:
+                    print(
+                        f"[tts] provider '{prov}' failed ({e}). Fallback is disabled "
+                        f"(tts.allow_fallback: false), so nothing will be spoken. "
+                        f"This keeps the voice consistent - fix the provider instead."
+                    )
         raise RuntimeError(f"All TTS providers failed. Last error: {last_err}")
 
     def _synthesize_with(self, provider: str, text: str) -> tuple[np.ndarray, int]:
@@ -249,6 +351,36 @@ class TTSEngine:
                 "ElevenLabs API key missing (config tts.elevenlabs.api_key or env ELEVENLABS_API_KEY)"
             )
         voice_id = c.get("voice_id", "21m00Tcm4TlvDq8ikWAM")
+
+        # Voice consistency settings.
+        #   stability 0.5 lets ElevenLabs re-interpret the emotion of every
+        #   request, so the same dispatcher sounded bored on one call and
+        #   frantic on the next. High stability = flat, repeatable delivery.
+        #   style 0 disables exaggeration entirely.
+        #   A fixed seed makes repeated calls render near-identically.
+        voice_settings = {
+            "stability": float(c.get("stability", 0.85)),
+            "similarity_boost": float(c.get("similarity_boost", 0.75)),
+            "style": float(c.get("style", 0.0)),
+            "use_speaker_boost": bool(c.get("use_speaker_boost", True)),
+        }
+        speed = c.get("speed")
+        if speed is not None:
+            # ElevenLabs accepts 0.7 - 1.2; anything else is rejected.
+            voice_settings["speed"] = float(np.clip(float(speed), 0.7, 1.2))
+
+        payload = {
+            "text": text,
+            "model_id": c.get("model_id", "eleven_turbo_v2"),
+            "voice_settings": voice_settings,
+        }
+        seed = c.get("seed")
+        if seed is not None:
+            try:
+                payload["seed"] = int(seed)
+            except (TypeError, ValueError):
+                pass
+
         resp = requests.post(
             ELEVENLABS_TTS_URL + str(voice_id),
             headers={
@@ -256,16 +388,19 @@ class TTSEngine:
                 "accept": "audio/mpeg",
                 "content-type": "application/json",
             },
-            json={
-                "text": text,
-                "model_id": c.get("model_id", "eleven_turbo_v2"),
-                "voice_settings": {
-                    "stability": c.get("stability", 0.5),
-                    "similarity_boost": c.get("similarity_boost", 0.75),
-                },
-            },
-            timeout=30,
+            json=payload,
+            timeout=int(c.get("timeout", 30)),
         )
+        if resp.status_code == 401:
+            raise RuntimeError(
+                "ElevenLabs rejected the API key (401). The key needs the "
+                "'Text to Speech' permission enabled."
+            )
+        if resp.status_code == 429:
+            raise RuntimeError(
+                "ElevenLabs quota/rate limit reached (429). Character quota is "
+                "likely exhausted for this billing period."
+            )
         resp.raise_for_status()
         return _decode_mp3_bytes(resp.content)
 

@@ -25,6 +25,7 @@ from modules.file_watcher import (
 )
 from modules.nui_capture import CaptureEngine
 from modules.flagger import Flagger
+from modules.brain import Brain
 from modules.llm import LLMProcessor, spell_plates, strip_ten_codes
 from modules.player import AudioPlayer
 from modules.radiofx import RadioFX
@@ -581,6 +582,28 @@ class DispatchRelay:
     def _handle_flag(self, flag: dict) -> None:
         summary = self._summary(flag)
         self._log(f"FLAGGED: {summary}")
+
+        # The brain decides what actually deserves radio traffic. Unit traffic
+        # (code 6, panic, CAD, ...) bypasses it, because the flagger already
+        # applied the operator's scope rules to those.
+        verdict = None
+        if getattr(self, "brain", None) is not None:
+            try:
+                verdict = self.brain.evaluate(flag)
+            except Exception as e:
+                self._log(f"Brain error: {e}")
+                verdict = None
+        if verdict is not None and not verdict.broadcast:
+            self._log(f"SKIPPED by brain ({verdict.reason}): no TTS.")
+            self.recent.appendleft(
+                {
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "raw": summary,
+                    "dispatch": f"(skipped: {verdict.reason})",
+                }
+            )
+            return
+
         if isinstance(flag, dict) and flag.get("type") == "mdc":
             # _speak_text; they do not go through the 911 verify/AI path.
             try:
@@ -603,8 +626,19 @@ class DispatchRelay:
                 }
             )
             return
+        # Decide the priority from the dispatch BEFORE any scrubbing, then
+        # carry that decision to the alert instead of re-guessing it later.
+        try:
+            from modules.llm import dispatch_priority
+            priority = dispatch_priority(dispatch)
+        except Exception:
+            priority = None
         dispatch = spell_plates(strip_ten_codes(dispatch))
-        self._log(f"DISPATCH: {dispatch}")
+        self._log(
+            f"DISPATCH: {dispatch}  [priority={priority}]"
+            if self.cfg.get("ui", {}).get("debug")
+            else f"DISPATCH: {dispatch}"
+        )
         self.recent.appendleft(
             {
                 "time": datetime.now().strftime("%H:%M:%S"),
@@ -613,29 +647,38 @@ class DispatchRelay:
             }
         )
         try:
-            self._synth_q.put_nowait((dispatch, True))
+            self._synth_q.put_nowait((dispatch, True, priority))
         except queue.Full:
             self._log("Synth queue full -- dropped a call.")
 
-    def _is_priority(self, text: str) -> bool:
-        t = (text or "").lower()
-        if "code 3" in t or "code three" in t:
-            return True
-        if "in distress" in t or "shots fired" in t or "officer down" in t:
-            return True
-        try:
-            from modules.llm import _HIGH_RISK
-            return bool(_HIGH_RISK.search(text or ""))
-        except Exception:
-            return False
+    def _is_priority(self, text: str, priority=None) -> bool:
+        """
+        Priority is decided ONCE, when the dispatch is built, and handed to us
+        as `priority`. We only fall back to reading the stated code out of the
+        text when no decision was passed in (e.g. a legacy 2-tuple queue item).
 
-    def _should_alert(self, text: str) -> bool:
+        The old version also ran modules.llm._HIGH_RISK over the finished
+        speech. That regex matches 'burglary', 'fire', 'crash', 'threat' and
+        more, so ordinary Code 2 property calls were treated as priorities and
+        the alert tone played on them. That fallback is gone on purpose.
+        """
+        if priority is not None:
+            return bool(priority)
+        try:
+            from modules.llm import dispatch_priority
+            decided = dispatch_priority(text)
+        except Exception:
+            decided = None
+        # Unknown => not a priority, so "priorities only" stays quiet.
+        return bool(decided)
+
+    def _should_alert(self, text: str, priority=None) -> bool:
         alert_cfg = self.cfg.get("alert", {}) or {}
         if not alert_cfg.get("enabled", True):
             return False
         scope = str(alert_cfg.get("scope", "all")).lower()
         if scope.startswith("prio") or scope in ("code3", "urgent", "high"):
-            return self._is_priority(text)
+            return self._is_priority(text, priority)
         return True
 
     def speak_test(self) -> None:
@@ -660,15 +703,19 @@ class DispatchRelay:
             try:
                 if item is None:
                     break
+                priority = None
                 if isinstance(item, tuple):
-                    text, alert_ok = item
+                    if len(item) >= 3:
+                        text, alert_ok, priority = item[0], item[1], item[2]
+                    else:
+                        text, alert_ok = item[0], item[1]
                 else:
                     text, alert_ok = item, True
                 if self.tts is None:
                     self._ensure_pipeline()
                 samples, sr = self.tts.synthesize(text)
                 samples, sr = self.radiofx.apply(samples, sr)
-                if alert_ok and self._should_alert(text):
+                if alert_ok and self._should_alert(text, priority):
                     samples = self.alert.prepend(samples, sr)
                 if not self._running.is_set():
                     continue
@@ -684,6 +731,7 @@ class DispatchRelay:
         _flag_cfg["own_callsigns"] = (self.cfg.get("location", {}) or {}).get("callsigns", [])
         _flag_cfg["mdc_lookup"] = self.cfg.get("mdc_lookup", {}) or {}
         self.flagger = Flagger(_flag_cfg)
+        self.brain = Brain(self.cfg.get("brain", {}) or {})
         self.radiofx = RadioFX(self.cfg.get("radiofx", {}))
         self.llm = LLMProcessor(self.cfg.get("llm", {}))
         self.alert = AlertSound(self.cfg.get("alert", {}), base_dir=SCRIPT_DIR)

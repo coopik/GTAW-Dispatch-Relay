@@ -1,533 +1,1275 @@
 # 911 Dispatch Relay
 
-A local desktop tool for **GTA World (FiveM RP)**. It reads the chat log written by the GTA World Chat Log Assistant, picks out new **911 chat lines** and **in-game 911 / 311 call cards**, rewrites them into a realistic **LAPD radio dispatch** call-out, speaks it in a female voice with a **radio filter**, and plays it through **your own speakers/headset only**.
+**Version 1.6.0**
 
-It reads **one local file, read-only** - the `current-session.txt` chat log written by the GTA World Chat Log Assistant while you play. It does **not** touch the game process, memory, or network, it never writes to that file, and it never broadcasts audio to other players.
-
----
-
-## Easy install (recommended for most people)
-
-If you just want to use the app and not touch any code, use the ready-made Windows installer from the GitHub repo. **No Python, no terminal.**
-
-1. Go to the repository: <https://github.com/coopik/GTA-W-Dispatch-Relay>
-2. Open the **Releases** section on the right-hand side (or the `installer_output` download link in the README there).
-3. Download the latest **`911DispatchRelay-Setup-x.x.x.exe`**.
-4. Run it. Windows SmartScreen may warn about an unknown publisher - click **More info -> Run anyway** (the installer is built with Inno Setup and is safe; it is your own build).
-5. Follow the wizard (it creates Start Menu + desktop shortcuts and an uninstaller).
-6. Launch **911 Dispatch Relay** from the Start Menu or desktop.
-7. First run: open **Settings** to paste your ElevenLabs (or other) API key, then on the **Dashboard** press **Detect file** followed by **Start**. See the **Tutorial** tab inside the app for a step-by-step walkthrough.
-
-> Your settings (API key, voice, chat log path) are stored in `%APPDATA%\911 Dispatch Relay\config.yaml`, so they survive updates and reinstalls.
-
-> Updating: download and run the newer setup `.exe` over the top - your settings are preserved. You do **not** need Python for this path.
-
-Prefer to run or modify the source code instead? Follow the developer setup in sections 1-8 below.
-
----
-
-## What it does (pipeline)
-
-1. **Watch** the FiveM chat log for new lines - instant file notifications, with a polling safety net.
-2. **Parse** each line into a clean message: sender, call sign, channel (radio / local / OOC / PM / HQ / dispatch) and the exact text. Multi-line 911 call cards are assembled into one message.
-3. **Flag** relevant lines: chat patterns (`911`, `*dials 911*`, `[EMS]`, `[PD]`) and structured **call blocks** (Call ID / Situation / Location / Number).
-4. **Rewrite** the flagged text into an LAPD dispatch call-out (offline generator, or an LLM API if you add a key).
-5. **Speak** it (ElevenLabs / Edge / Google / pyttsx3), reading numbers digit-by-digit.
-6. **Radio filter**: bandpass, static, distortion, key-click.
-7. **Play** locally, queuing calls so they never overlap. A short alert tone plays before each dispatch.
-
----
-
-## 1. Install Python
-
-1. Install **Python 3.10+** (3.11 or 3.12 recommended) from <https://www.python.org/downloads/>.
-2. On the installer's first screen, tick **"Add python.exe to PATH"**.
-3. Verify in a terminal (PowerShell or CMD):
-   ```
-   py --version
-   ```
-
-> Python 3.13/3.14 removed the built-in `audioop` module that audio needs. This is handled automatically by the `audioop-lts` dependency below, so any modern version works.
-
----
-
-## 2. Get the project & install dependencies
-
-1. Unzip this folder somewhere easy, e.g. `C:\Users\<you>\Downloads\911 Dispatch Relay\`.
-2. Open a terminal **in that folder** (in File Explorer, type `cmd` in the address bar and press Enter).
-3. (Recommended) create a virtual environment:
-   ```
-   py -m venv .venv
-   .venv\Scripts\activate
-   ```
-4. Install the Python packages:
-   ```
-   py -m pip install --upgrade pip
-   py -m pip install -r requirements.txt
-   ```
-
-This installs the file watcher, the audio stack, and (on Windows) `pywin32` for the system-tray icon.
-
----
-
-## 3. Point it at your chat log
-
-**FiveM does not save your chat anywhere.** Unlike RAGE MP, there is no storage file to read - the
-chat lives inside the game's local NUI page and is gone the moment the frame is redrawn.
-
-**So the app reads it out of the running game itself, and you do not have to install anything.**
-FiveM's chat is a small local web page, and FiveM exposes a debug port for it on `127.0.0.1` that
-only programs on your own machine can reach. The app connects to that port, creates a private
-sandbox inside the chat frame, and asks it what is currently on screen twice a second. It is
-read-only and local: nothing is written to the game, no memory is touched, no keystrokes are sent,
-and nothing leaves your PC. Every line it sees is saved to:
+An AI LAPD radio dispatcher for GTA World / FiveM roleplay. It watches your game
+chat log, spots 911 calls and unit radio traffic, writes a realistic LAPD
+dispatch broadcast, and reads it aloud over a radio-effect voice.
 
 ```
-%APPDATA%\911 Dispatch Relay\live-session.txt
+game chat log  ->  flagger  ->  brain  ->  Smart Dispatch  ->  voice  ->  your speakers
+                (find it)   (is it real?)  (write it)      (say it)
 ```
 
-Just start FiveM and press **Start** - the Dashboard will say *reading FiveM directly*. Only one
-program at a time may attach to FiveM's chat, so close the GTAW Log Parser if it is running.
+---
 
-Two things this cannot do: it only sees chat that is **currently visible** in the chat box, so an
-extreme flood can scroll lines away before the next read, and it depends on GTA World's HUD markup,
-so a redesign on their side can break it until the app is updated.
+# Table of contents
 
-**If live capture is unavailable**, the app falls back to the file written by the **GTA World Chat
-Log Assistant** (GTAW Log Parser) - the community tool many people already run. Set
-`input_source.capture: off` to skip live capture entirely and only read a log file:
+**Getting started**
+1. [Quick start (5 minutes)](#1-quick-start-5-minutes)
+2. [Install Python](#2-install-python)
+3. [Install the app](#3-install-the-app)
+4. [Point it at your chat log](#4-point-it-at-your-chat-log)
+5. [Install ffmpeg](#5-install-ffmpeg)
+6. [Run it](#6-run-it)
+
+**Voice**
+7. [Voice setup and the four providers](#7-voice-setup)
+8. [ElevenLabs: getting a key and the exact permissions](#8-elevenlabs-key-and-permissions)
+9. [Keeping the voice consistent](#9-keeping-the-voice-consistent)
+
+**Smart Dispatch**
+10. [What Smart Dispatch is and how it works](#10-what-smart-dispatch-is)
+11. [Getting an AI API key](#11-getting-an-ai-api-key)
+12. [Turning Smart Dispatch on](#12-turning-smart-dispatch-on)
+13. [Choosing a model, and what it costs](#13-models-and-cost)
+
+**Features**
+14. [Your call signs and "only answer my call sign"](#14-call-signs-and-scope)
+15. [The Brain: what gets read and what does not](#15-the-brain)
+16. [Streets, districts and RDs](#16-streets-districts-and-rds)
+17. [Alarms, including vehicle alarms](#17-alarms)
+18. [MDC Lookup Assistant](#18-mdc-lookup-assistant)
+
+**Reference**
+19. [Full config reference](#19-full-config-reference)
+20. [Testing without the game](#20-testing-without-the-game)
+21. [Troubleshooting](#21-troubleshooting)
+22. [Performance tuning](#22-performance-tuning)
+23. [Project structure](#23-project-structure)
+24. [Legal / fair use](#24-legal--fair-use)
+
+---
+
+# 1. Quick start (5 minutes)
+
+If you just want it working with zero keys and zero cost:
+
+1. Run the installer (`911DispatchRelay-Setup-1.6.0.exe`) **or** follow
+   [section 2](#2-install-python) and [section 3](#3-install-the-app).
+2. Launch **911 Dispatch Relay**.
+3. Go to **Settings > Input source** and click **Auto-detect**.
+4. Go to **Settings > Unit call-outs** and type your call signs, e.g. `25T15`.
+5. Click **Start** on the Dashboard.
+
+That's it. You are now running on the **free** voice (Edge Neural) and the
+**free offline** dispatch writer. No API keys, no bills, no accounts.
+
+Add keys later only if you want:
+
+| You want | You need | Cost |
+|---|---|---|
+| It working at all | nothing | free |
+| Smarter, more varied call-outs | an AI key ([section 11](#11-getting-an-ai-api-key)) | free tier available |
+| A specific premium voice | an ElevenLabs key ([section 8](#8-elevenlabs-key-and-permissions)) | free tier available |
+
+---
+
+# 2. Install Python
+
+**Skip this if you used the installer .exe.**
+
+1. Download Python **3.10 or newer** from <https://www.python.org/downloads/>.
+2. Run the installer.
+3. **Tick "Add python.exe to PATH"** on the first screen. This is the single
+   most common setup mistake. If you miss it, nothing below works.
+4. Verify in a new Command Prompt:
+
+```bat
+python --version
+```
+
+You should see `Python 3.10.x` or higher.
+
+---
+
+# 3. Install the app
+
+```bat
+cd "C:\path\to\911 Dispatch Relay"
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+Every time you open a new Command Prompt to run the app, re-run
+`.venv\Scripts\activate` first. Your prompt shows `(.venv)` when it is active.
+
+### Optional extras
+
+```bat
+pip install pywin32     # system tray + multi-monitor placement
+pip install keyboard    # global Start/Stop hotkeys
+pip install rapidfuzz   # ~10x faster street-name typo matching
+```
+
+`rapidfuzz` is worth installing. The app works without it (it falls back to
+Python's built-in matcher), but street correction gets noticeably faster.
+
+---
+
+# 4. Point it at your chat log
+
+The app reads a **text log your game writes to disk**. It never touches game
+memory, never injects code, and never sends keystrokes into the game.
+
+## The easy way
+
+**Settings > Input source > Auto-detect.** Done in most cases.
+
+## The manual way
+
+You need a chat logger. The supported one is the **GTAW Log Parser (FiveM)**,
+which writes to:
 
 ```
 %LOCALAPPDATA%\GTAW-Log-Parser-FiveM\current-session.txt
 ```
 
-For example:
+Paste that into **Settings > Input source > Chat log path**.
+
+### Checking it works
+
+1. Start the log parser and leave it running.
+2. Stand somewhere busy in game so chat scrolls.
+3. Open the file in Notepad. You should see lines like:
 
 ```
-C:\Users\<you>\AppData\Local\GTAW-Log-Parser-FiveM\current-session.txt
+[19:42:11] Someone says: help, there's a guy with a gun outside!
+[19:42:30] ** [S: 1] Dispatch: 25T15, respond to Innocence Boulevard **
 ```
 
-1. **Run the Chat Log Assistant whenever you play.** No assistant running means no chat log, and
-   nothing for this app to read.
-2. Start the app and press **Detect file** on the Dashboard. It finds that file automatically.
-3. If that fails, press **Browse...** and pick the file yourself.
-4. The chosen path is saved to `config.yaml` under `input_source.path`.
+If the file is empty or missing, the problem is the **log parser**, not this
+app. Fix that first.
 
-> **Play for a moment before detecting.** The file only exists once the assistant has captured its
-> first line.
+### Screen-capture mode (fallback)
 
-> **Old RAGE MP setups still work.** `input_source.source: auto` looks for the FiveM file first and
-> falls back to a RAGE MP `.storage` file, and the reader handles either format. Force one with
-> `fivem` or `ragemp`.
-
-> How it reads: the app compares successive snapshots of the file to work out what is new, so only
-> new chat is ever announced and the file is opened read-only. The assistant **empties** its session
-> file every time FiveM starts a new session - the app detects that and resyncs, instead of
-> replaying the whole backlog at you.
+If your server has no log parser, **Settings > Input source > Screen capture**
+reads chat with OCR off your screen. It is slower and less accurate. Use the
+log file whenever you can.
 
 ---
 
-## 4. ffmpeg (audio decoding)
+# 5. Install ffmpeg
 
-ffmpeg is needed to decode MP3 audio from the TTS services. The `imageio-ffmpeg` dependency bundles a copy automatically, so **you usually do not need to install anything**. If you ever see a `[WinError 2]` audio error, install ffmpeg from <https://www.gyan.dev/ffmpeg/builds/> and add its `bin` folder to PATH.
+Needed to decode audio from ElevenLabs and Google. **If you only use the free
+Edge voice you can skip this.**
+
+1. Download a Windows build from <https://www.gyan.dev/ffmpeg/builds/>
+   (`ffmpeg-release-essentials.zip`).
+2. Extract it, e.g. to `C:\ffmpeg`.
+3. Add `C:\ffmpeg\bin` to your PATH.
+4. Verify in a **new** Command Prompt:
+
+```bat
+ffmpeg -version
+```
+
+Or just drop `ffmpeg.exe` in the app folder next to `main.py`.
 
 ---
 
-## 5. Voice (TTS) setup
+# 6. Run it
 
-Default provider is **ElevenLabs**. Your API key and voice ID are already in `config.yaml` under `tts.elevenlabs`.
+```bat
+.venv\Scripts\activate
+python main.py
+```
 
-- **Free ElevenLabs plan:** you can only use **your own** voices. Pick a voice ID from your ElevenLabs **VoiceLab / Voices** page and paste it into `tts.elevenlabs.voice_id`. (Library/premade voices return `402 Payment Required` on the free plan.)
-- **No API key / fully free:** set `tts.provider: edge`. This uses Microsoft's free neural voices (`en-US-AriaNeural` is a female voice). `edge-tts` is included in `requirements.txt` and is **bundled into the installed .exe automatically** — no manual install needed. (If you run from source, `pip install -r requirements.txt` already covers it.)
-- **Google Cloud TTS:** set `tts.provider: google`, install `google-cloud-texttospeech`, and point `tts.google.credentials_json` at your service-account JSON.
-- **Offline Windows voice:** set `tts.provider: pyttsx3` (uses the built-in Windows "Zira" female voice, no internet).
+The GUI opens. Click **Start**.
 
-Numbers are always spoken **digit-by-digit** (`speak_digits: true`), so "911" becomes "nine one one" and incident "0907" becomes "nine oh seven".
+CLI mode, if you prefer no window:
+
+```bat
+python main.py --cli
+```
+
+### What you should see
+
+```
+[19:42:11] Watching C:\Users\you\AppData\Local\GTAW-Log-Parser-FiveM\current-session.txt
+[19:42:33] FLAGGED: Incident 4471: guy with a gun outside the store @ Innocence Boulevard
+[19:42:34] DISPATCH: All units, a 706 brandishing at Innocence Boulevard. RP reports a
+           male armed with a handgun outside a store. Incident four four seven one.
+           R D, thirteen fifty two. Code 3 emergency. Units responding, identify.
+```
+
+If you see `FLAGGED` but no `DISPATCH`, your voice provider failed. See
+[section 21](#21-troubleshooting).
 
 ---
 
-## 6. Optional: smarter rewrites with an LLM
+# 7. Voice setup
 
-The app ships with a **smart offline dispatcher generator** that already:
+Four providers. Set with `tts.provider` or in **Settings > Voice**.
 
-- **Judges severity** and picks the right response code - **Code 3** (lights and sirens) for anything violent or life-threatening in progress (a woman screaming for help, shots fired, an assault, someone unconscious), and **Code 2** for cold or non-violent reports (a theft that already happened, vandalism, a suspect who already left).
-- **Re-states the call in third person** like a real dispatcher instead of parroting the caller ("I'm being followed" becomes "reporting party states they're being followed").
-- Applies the **San Andreas Penal Code**, reads only the last four digits of the incident, and never reads the caller's name or phone number.
-- Handles **unit radio traffic** (code six, requesting an additional unit, pursuits, officer in distress) separately from 911 calls.
+| Provider | Key needed? | Cost | Quality | Notes |
+|---|---|---|---|---|
+| `edge` | No | Free | Very good | **Default.** Microsoft neural voice, needs internet |
+| `pyttsx3` | No | Free | Poor/robotic | Fully offline Windows SAPI. Emergency fallback |
+| `elevenlabs` | Yes | Free tier, then paid | Best | Most realistic dispatcher |
+| `google` | Yes | Paid | Very good | Google Cloud TTS |
 
-For even more natural, context-aware wording, add any **OpenAI-compatible** API key under `llm`:
+The default `edge` provider is genuinely good and costs nothing. Only move to
+ElevenLabs if you want a specific voice.
+
+### Recommended radio effect
+
+Leave `radiofx.enabled: true`. It band-passes the voice to 300-3000 Hz and adds
+mic clicks and static, which is what actually makes it sound like a police
+radio. A clean studio voice sounds far less convincing than a slightly crunchy
+one.
+
+---
+
+# 8. ElevenLabs key and permissions
+
+## Step 1: Make an account
+
+Go to <https://elevenlabs.io> and sign up. The free tier gives you roughly
+10,000 characters per month, which is around 100 short call-outs.
+
+## Step 2: Create the API key
+
+1. Click your **profile icon** (bottom-left).
+2. Choose **API Keys**.
+3. Click **Create API Key**.
+4. Name it something like `Dispatch Relay`.
+
+## Step 3: Set the permissions - THIS IS THE IMPORTANT PART
+
+ElevenLabs keys are scoped. A key with the wrong scopes returns **HTTP 401**,
+and older versions of this app then silently switched to a different voice,
+which is exactly why some users heard the dispatcher change character
+mid-shift.
+
+Set the scopes like this:
+
+| Scope | Setting | Why |
+|---|---|---|
+| **Text to Speech** | **Has access** | Required. This is the only scope the app actually calls |
+| **Voices** | Read only *(optional)* | Only lets the app list your voices in Settings |
+| **Models** | Read only *(optional)* | Only lets the app list available models |
+| User | No access | Not needed |
+| History | No access | Not needed |
+| Dubbing | No access | Not needed |
+| Voice Cloning | No access | Not needed |
+| Projects / Studio | No access | Not needed |
+| Sound Generation | No access | Not needed |
+| Workspace | No access | Not needed |
+
+**Minimum viable key: Text to Speech = Has access. Everything else off.**
+
+Also set:
+
+- **Character quota limit**: optional, but setting e.g. `10000` means a runaway
+  loop can never burn your whole balance.
+- **Restrict key to specific voices**: optional, recommended. Restrict it to
+  the one dispatcher voice you use.
+
+Copy the key immediately. ElevenLabs shows it **once**.
+
+## Step 4: Pick a voice ID
+
+1. Go to **Voices** in the ElevenLabs sidebar.
+2. Pick or add a voice. For a dispatcher, a calm, level American voice works
+   best. Avoid "expressive" or "characterful" voices; they over-act.
+3. Click the voice, then **ID** to copy its voice ID (a string like
+   `pYduSEMlSc5NZ5UXU4aO`).
+
+## Step 5: Put it in the app
+
+**The safe way (recommended)** - set an environment variable so your key never
+sits in a config file you might share:
+
+```bat
+setx ELEVENLABS_API_KEY "your-key-here"
+```
+
+Then close and reopen your Command Prompt.
+
+**The direct way** - in `config.yaml`:
+
+```yaml
+tts:
+  provider: elevenlabs
+  elevenlabs:
+    api_key: ''            # leave blank to use the env var above
+    voice_id: pYduSEMlSc5NZ5UXU4aO
+    model_id: eleven_turbo_v2
+    stability: 0.85
+    similarity_boost: 0.75
+    style: 0.0
+    use_speaker_boost: true
+    speed: 1.0
+    seed: 20250905
+    timeout: 30
+```
+
+> **Never commit a real key.** If you ever share your `config.yaml`, a zip, or a
+> screenshot of it, treat that key as burned and rotate it in the ElevenLabs
+> dashboard immediately.
+
+## Which model?
+
+| Model | Latency | Use it when |
+|---|---|---|
+| `eleven_turbo_v2` | Lowest | **Recommended.** Dispatch needs to be fast |
+| `eleven_multilingual_v2` | Higher | You need non-English |
+| `eleven_monolingual_v1` | Higher | Legacy |
+
+---
+
+# 9. Keeping the voice consistent
+
+If your dispatcher used to sound calm on one call, rushed on the next, and
+occasionally like a chipmunk, that was three separate causes. All three are
+fixed in 1.6.0, and these are the settings that control them.
+
+```yaml
+tts:
+  allow_fallback: true      # see below
+  normalize_audio: true     # equalise loudness across all call-outs
+  output_sample_rate: 24000 # one rate for every provider - kills pitch shifts
+```
+
+### `allow_fallback`
+
+When your provider fails, the app can fall back `edge` -> `pyttsx3`. Those are
+**different voices**, so a rate-limited or unscoped ElevenLabs key produced a
+different-sounding dispatcher on every failed call.
+
+- `true` - always get audio, but the voice may change if your provider fails.
+- `false` - **pin one voice.** If it fails you get a clear log line and silence
+  for that call instead of a stranger's voice.
+
+Set it to `false` if voice consistency matters more to you than never missing a
+call.
+
+### `stability: 0.85`
+
+This is the ElevenLabs setting that was really causing the "fast and excited vs
+slow" problem. At the old `0.5`, ElevenLabs re-interprets the emotion of each
+request, so identical text is performed differently every time. `0.85` holds
+the delivery flat and repeatable, which is what a real RTO sounds like.
+
+Also keep `style: 0.0`. Style is emotional exaggeration; a dispatcher has none.
+
+### `seed`
+
+A fixed integer seed makes ElevenLabs generate near-identical delivery for
+identical text. Change it only if you want to reroll the voice's character.
+
+### The chipmunk bug
+
+Providers return audio at different sample rates (16 kHz to 48 kHz). Audio
+played at the wrong rate is pitch-shifted - 48 kHz audio played as 24 kHz is
+the chipmunk voice. Everything is now resampled to a single
+`output_sample_rate` before playback, so this cannot happen.
+
+### Text is flattened too
+
+Even with a locked voice, `Shots fired!!!` and `ARMED AND DANGEROUS` make any
+TTS engine speed up and raise pitch. The app now flattens `!!!`, `...`, `--`
+and SHOUTED WORDS before synthesis, while preserving real abbreviations like
+`RD`, `TAC`, `EMS`, `LAPD` and `BOLO`.
+
+---
+
+# 10. What Smart Dispatch is
+
+**Smart Dispatch is the AI layer that turns a panicked player's chat message
+into a professional LAPD radio broadcast.**
+
+## The problem it solves
+
+A player types:
+
+> `Someone says: OH MY GOD there's a dude with a knife chasing a woman down the street near little soeul please help!!!`
+
+Reading that aloud is useless. Smart Dispatch produces:
+
+> *All units, a 207 assault with a deadly weapon in progress at Little Seoul. RP
+> reports a male armed with a knife pursuing a female on foot. Incident four
+> four seven one. R D, oh two seventy two. Code 3 emergency. Units responding,
+> identify.*
+
+## The pipeline
+
+```
+1. FLAGGER    Is this line even a 911 call or radio traffic?
+              (channel filters, chat structure, dedup, your scope rules)
+                            |
+2. BRAIN      Is it a real incident, or OOC chatter / a prank / a hang-up?
+              Offline scoring. No AI, no tokens, instant.
+                            |
+3. GEO        Fix the location typo. "little soeul" -> "Little Seoul".
+              Generate the RD for that location.
+                            |
+4. SMART      Write the broadcast: pick the penal code section, judge
+   DISPATCH   Code 2 vs Code 3, summarise in third person, add the
+              incident number and RD, choose a closing.
+                            |
+5. VOICE      Clean the text for speech, synthesise, add radio effect, play.
+```
+
+## Two engines, and this matters
+
+Step 4 runs one of two engines:
+
+**A. The offline generator (default, free)**
+A hand-written LAPD call-out builder. It matches the incident against ~60 San
+Andreas Penal Code sections, decides the response code, corrects the location,
+attaches the RD, and varies its openings and closings. It needs no key, costs
+nothing, and never rate-limits. It is genuinely good, just more formulaic.
+
+**B. The AI rewrite (optional, needs a key)**
+Sends the situation to an LLM with a detailed LAPD RTO system prompt. Handles
+unusual calls the offline generator has no template for, and phrases things
+more naturally. This is what most people mean by "Smart Dispatch".
+
+**The AI never runs alone.** The offline generator always produces a call-out
+first. If the AI is off, fails, times out or returns junk, you still hear a
+proper broadcast. This is why the app has no single point of failure.
+
+---
+
+# 11. Getting an AI API key
+
+You need **one** of these. Groq is the best starting point: it is fast and has
+a genuinely usable free tier.
+
+## Option A: Groq (recommended, free tier)
+
+1. Go to <https://console.groq.com>.
+2. Sign up (Google/GitHub login works).
+3. Click **API Keys** in the sidebar.
+4. Click **Create API Key**, name it `Dispatch Relay`.
+5. Copy it. It starts with `gsk_`.
 
 ```yaml
 llm:
   enabled: true
-  base_url: https://api.openai.com/v1   # OpenAI
-  model: gpt-4o
-  api_key: sk-...
-```
-
-### Using Groq (fast + free developer tier)
-
-Groq is OpenAI-compatible, so it is a drop-in. Point `base_url` at Groq and use one of its models:
-
-```yaml
-llm:
-  enabled: true
+  provider: openai_compatible
   base_url: https://api.groq.com/openai/v1
-  model: openai/gpt-oss-120b        # or llama-3.3-70b-versatile, openai/gpt-oss-20b
-  api_key: gsk_your_groq_key_here
+  model: llama-3.3-70b-versatile
+  api_key: 'gsk_your_key_here'
+  max_tokens: 400
+  reasoning_effort: low
+  timeout: 20
+  emergency_only: true
 ```
 
-> If Groq "does nothing", it is almost always because `model` is still an OpenAI name (like `gpt-4o`) that Groq does not have - the request fails and it silently falls back to the offline generator. Set `model` to a real Groq model as shown above.
+## Option B: OpenAI
 
-The dispatcher persona/instructions live in `llm.system_prompt` in `config.yaml`; leave it blank to use the built-in prompt. Leave `api_key` blank to stay fully offline. If the API fails for any reason, it automatically falls back to the offline generator.
+1. Go to <https://platform.openai.com>.
+2. Sign up, then **Settings > Billing** and add credit. OpenAI has **no free
+   tier**; $5 lasts a very long time at this usage.
+3. Go to **API Keys > Create new secret key**.
+4. Under permissions choose **Restricted**, and grant only:
+   - **Model capabilities: Write** (this is what `/chat/completions` needs)
+   - Everything else: **None**
+5. Copy the key. It starts with `sk-`.
 
-### Optional: AI verification of borderline flags
+```yaml
+llm:
+  base_url: https://api.openai.com/v1
+  model: gpt-4o-mini
+  api_key: 'sk-your_key_here'
+```
 
-Detection (deciding *what* to flag) is done by fast local rules on every frame, so it stays free and instant. If you want an extra layer of accuracy, turn on **AI verification** (Settings > Dispatch AI, or `llm.verify_flags: true`). When enabled, borderline flags (911 call cards, generic chat, and radio traffic) are sent to your LLM with a strict yes/no question -- *"is this a real emergency a dispatcher would broadcast, or just on-screen text / an advertisement / a server banner?"* -- before anything is spoken. Structurally-certain events (panic button, code six, CAD updates that already carry a callsign) skip the check for speed, verdicts are cached, and if the API errors or times out the flag is allowed through (fails open) so a real call is never silently dropped. Off by default; requires an `api_key`.
+## Option C: A local model (free, private, no internet)
+
+Run [Ollama](https://ollama.com) or LM Studio, then:
+
+```yaml
+llm:
+  base_url: http://localhost:11434/v1
+  model: llama3.1:8b
+  api_key: 'ollama'      # any non-empty string
+  timeout: 60            # local models are slower
+```
+
+Keeps everything on your machine and costs nothing, but needs a decent GPU.
 
 ---
 
-## 7. Run it
+# 12. Turning Smart Dispatch on
 
-From the project folder (with the venv active if you made one):
+### In the GUI
 
+1. **Settings > Smart Dispatch (AI)**
+2. Tick **Enable AI rewrites**
+3. Paste your API key
+4. Set the **Base URL** and **Model** for your provider ([section 11](#11-getting-an-ai-api-key))
+5. Click **Test connection**
+6. **Save**
+
+### In `config.yaml`
+
+```yaml
+llm:
+  enabled: true
+  provider: openai_compatible
+  base_url: https://api.groq.com/openai/v1
+  model: llama-3.3-70b-versatile
+  api_key: 'gsk_...'
+  max_tokens: 400
+  reasoning_effort: low
+  tac_referral: true
+  timeout: 20
+  emergency_only: true
+  repeat_location: true
 ```
-py main.py
-```
 
-The app opens with a clean, light-theme interface:
+### Verifying it is actually running
 
-- **Sidebar** - switch between **Dashboard**, **Settings**, and **About**.
-- **Dashboard** - a big status card (Idle / Listening / Speaking), **Start** / **Stop** buttons, a **Chat log input** card with **Detect file**, **Browse...**, **Test Voice** and **Show Chat**, a live **Recent calls** feed, and an activity log.
-- **Settings** - every option from `config.yaml` in one place (voice, dispatch AI, radio effect, chat log input, flagging, playback, alert). Edit and hit **Save** - changes apply immediately (playback device/volume changes apply on restart). There's also a **\u2699 Settings** button on the Dashboard.
+Turn on `ui.debug: true` and watch the console. AI-rewritten call-outs are
+logged differently from offline ones. Or use **Speak test** on the Dashboard.
 
-Headless mode: `py main.py --cli`. Locate the chat log and exit: `py main.py --detect`.
+If the AI is silently not being used, check in this order:
 
-> The modern UI uses **CustomTkinter** (installed via `requirements.txt`). If it isn't installed, the app automatically falls back to the classic interface, so it always runs.
+1. `llm.enabled` is `true`
+2. `api_key` is non-empty
+3. `base_url` matches your provider **and ends in `/v1`**
+4. `model` is a model your key can actually access
+5. `emergency_only` - if `true`, routine Code 2 calls deliberately skip the AI
+   to save tokens. Set `false` to use AI on everything.
 
-> If `python main.py` says "module not found", use `py main.py`. Run it from **inside** the project folder so it can find `config.yaml` and the `modules` folder.
+### Key settings explained
 
-> **Want a real installable app instead?** You can package this into a standalone
-> `911 Dispatch Relay.exe` and a one-click `Setup.exe` (with Start Menu + desktop shortcuts and an
-> uninstaller) - no Python needed for the end user. Just run **`build.bat`** on Windows. Full
-> instructions are in **`BUILD.md`**. When installed, your settings live in
-> `%APPDATA%\911 Dispatch Relay\config.yaml`, so your API key, voice, and chat log path
-> survive updates.
+| Setting | Meaning |
+|---|---|
+| `emergency_only: true` | Only spend tokens on emergencies. Routine calls use the free offline generator |
+| `max_tokens: 400` | Ceiling per call-out. Keep high; reasoning models get cut off mid-sentence otherwise |
+| `reasoning_effort: low` | For reasoning models. `low` keeps hidden reasoning short so the spoken text is not truncated |
+| `timeout: 20` | Seconds before giving up and using the offline call-out |
+| `tac_referral: true` | Adds "refer to TAC-1" on priority calls |
+| `repeat_location: true` | LAPD realism. The RTO says the address twice for clarity over the radio ("at Grove Street, Grove Street"). Set `false` to state it once |
+| `system_prompt` | Override the built-in LAPD RTO prompt entirely. Leave unset unless you know what you're doing |
+
+#### Why the location is said twice
+
+This is intentional, not a glitch. Real LAPD RTOs double-call the address so a
+unit that missed it the first time over engine noise or a stepped-on
+transmission still gets it:
+
+> All units, a 211 in progress **at Grove Street, Grove Street**. ...
+
+It is the same reason a unit's call sign is repeated ("1 Adam 12, 1 Adam 12").
+Both the offline generator and the AI prompt do this. If you would rather hear
+the address once, set `repeat_location: false`; the typo correction, RD and
+everything else are unaffected.
 
 ---
 
-## 8. What it watches
+# 13. Models and cost
 
-Everything comes from the one chat log file in section 3. There is **nothing to calibrate** - no
-region to drag, no window to pick. The game can be full-screen, minimized, or on another monitor;
-it makes no difference, because nothing is read from the screen.
+| Model | Provider | Speed | Quality | Cost |
+|---|---|---|---|---|
+| `llama-3.3-70b-versatile` | Groq | Very fast | Great | Free tier |
+| `gpt-4o-mini` | OpenAI | Fast | Great | ~$0.0001/call |
+| `gpt-4o` | OpenAI | Medium | Best | ~$0.002/call |
+| `llama3.1:8b` | Ollama (local) | Depends on GPU | Good | Free |
 
-Press **Start**. Use **Test Voice** to confirm audio and the radio filter, and **Show Chat** on the
-Dashboard to watch lines being parsed live in the form `(channel) sender: text`.
+A call-out is roughly 700 tokens in and 120 out. Even on `gpt-4o`, a long
+session costs cents. With `emergency_only: true` you cut that further.
 
-The parser understands the GTA World chat formats, including:
+---
 
-| Kind | Example |
+# 14. Call signs and scope
+
+This is the setting behind the "it flags everybody's code six" bug, so it is
+worth understanding properly.
+
+## Setting your call signs
+
+**Settings > Unit call-outs > Your call signs**, or:
+
+```yaml
+location:
+  callsigns: ["25T15", "1-Adam-12"]
+```
+
+Formatting is flexible. Phonetic words are expanded to letters before
+comparison, so every row below is understood as the **same unit**:
+
+| You can type | Read on air as |
+|---|---|
+| `1A12`, `1-Adam-12`, `1 Adam 12`, `1adam12` | one Adam twelve |
+| `25T15`, `25 Tom 15`, `25-Tom-15` | twenty-five Tom fifteen |
+| `2A55`, `2 Adam 55`, `2 Alpha 55` | two Adam fifty-five |
+| `R13` | Robert thirteen |
+| `3D31` | three David thirty-one |
+
+### Canine units
+
+Canine call signs are supported in every common spelling, and all of these
+resolve to the same unit:
+
+| You can type | Read on air as |
+|---|---|
+| `K9-1`, `K9 1`, `K9 one`, `Canine 1`, `canine one` | K nine one |
+| `K9 CH4`, `K9 channel 4` | K nine four |
+| `R30K9` | Robert thirty K nine |
+
+A canine unit is always read **"K nine"**, never "King nine" or "Kilo nine".
+
+NATO spellings are accepted and folded onto the LAPD word for the same letter,
+so typing `2 Alpha 55` is still read "two Adam fifty-five". Mixing forms is
+fine: if you list `25T15`, a transmission from `25 Tom 15` still matches.
+
+## What `scope` does
+
+Every unit-traffic feature has a `scope`:
+
+- `own` - only react to **your** call signs
+- `all` - react to every unit on the channel
+
+```yaml
+flagging:
+  code_six:
+    enabled: true
+    scope: own
+```
+
+## The bug that was fixed in 1.6.0
+
+With `scope: own`, code six was still being read for **everyone**. Two things
+were wrong:
+
+1. Call-sign matching was loose, so `1A12` could match other units' signs.
+   It is now an exact match after phonetic normalisation.
+2. **The real cause:** when the code-six parser correctly decided "this is not
+   my unit", the line fell through to the generic radio-traffic handler at the
+   end of the pipeline, which announced it anyway. The pipeline now records
+   that a feature deliberately refused a line, and the catch-all handler skips
+   it.
+
+So `scope: own` now actually means own.
+
+## Code six: backup vs additional
+
+Going code six marks you out for investigation, but the app also reads the rest
+of the transmission and grades the response code from it.
+
+| What the unit says | Response | Alert tone |
+|---|---|---|
+| `code six on Grove Street` | Code 2 | no |
+| `...requesting an additional unit` | Code 2 | no |
+| `...requesting a supervisor` / `an air unit` | Code 2 | no |
+| `...requesting backup` | **Code 3** | yes |
+| `...need help` / `assistance` / `a cover unit` | **Code 3** | yes |
+| `...I've got a body on the ground` | **Code 3** | yes |
+
+**Backup is not the same as an additional unit.** Backup (also help,
+assistance, a cover unit, expedite) is an emergency and goes out Code 3:
+
+> All units, one Adam twelve is requesting backup at Grove Street. Code 3, units
+> responding, identify.
+
+An additional unit is routine and goes out Code 2:
+
+> Additional unit requested at Elgin Avenue, any available unit, Code 2.
+
+You do not have to ask for anything for the app to escalate. Emergencies
+mentioned in passing are detected in the body of the transmission, so:
+
+> 25 Tom 15, code six on Adam's Apple, I've got a body on the ground
+
+is broadcast Code 3 with the alert tone, even though no backup was requested.
+The same applies to man down, unresponsive, not breathing, no pulse, DOA, GSW,
+gunshot, bleeding, stabbed, hostage, overdose, a weapon drawn and a fight in
+progress.
+
+## `require_callsigns`
+
+```yaml
+flagging:
+  require_callsigns: false
+```
+
+- `false` (default) - with **no** call signs configured, `own` answers every
+  unit. Convenient, but it is the old confusing behaviour.
+- `true` - `own` means exactly your list. With an empty list, nothing is
+  flagged.
+
+If you set any scope to `own`, **fill in your call signs.** If you don't, the
+app warns you, because `own` with an empty list is almost never what you meant.
+
+---
+
+# 15. The Brain
+
+New in 1.6.0. The flagger finds *candidates*; the brain decides whether a
+candidate is a *real incident* worth radio traffic.
+
+Before, anything matching a keyword got read out. So the dispatcher solemnly
+broadcast OOC chatter, hang-ups, prank calls, "what time does the station
+open", and the same robbery four times.
+
+## How it scores
+
+Fully offline, deterministic, instant, zero tokens.
+
+**Adds points for:** weapons, violence, medical emergencies, fire,
+in-progress wording, property crime, traffic collisions, disturbances, a usable
+location, and a detailed report.
+
+**Subtracts points for:** out-of-character chatter (`((`, `//`, `ooc`, `afk`,
+`lol`), tests and cancellations ("this is a test", "disregard", "false alarm",
+"wrong number"), information requests ("how do I file", "pay a ticket"),
+hang-ups and dead air, and routine quality-of-life complaints.
+
+**Rejects outright:** bare acknowledgements (`hey`, `copy`, `10-4`), keysmash
+spam, anything too short to be an incident, and duplicates of a call already
+broadcast in the last two minutes.
+
+## Config
+
+```yaml
+brain:
+  enabled: true
+  threshold: 18            # score needed to broadcast
+  priority_threshold: 50   # score that counts as a priority
+  repeat_window_sec: 120   # duplicate suppression window
+  require_location: false  # true = never broadcast without a location
+  min_letters: 12
+  log_decisions: false
+```
+
+## Tuning it
+
+Set `log_decisions: true` and watch the console. Every suppression is logged
+with its reason:
+
+```
+[brain] suppressed: out-of-character chatter
+[brain] suppressed: no dispatchable content (score 10 < 18)
+[brain] suppressed: duplicate of a call already broadcast
+```
+
+- Still reading noise? Raise `threshold` to 25-35.
+- Skipping calls you wanted? Lower it to 10-15.
+- Want everything back? `enabled: false`.
+
+## Reading unit radio traffic (new in 1.6.0)
+
+The brain also reads what *units* say on the radio, in plain English, with no
+code word required. Before 1.6.0 you had to say "code six" or "shots fired"
+before the app would react to anything at all; `25T15, I need backup on Calais.`
+produced nothing.
+
+Every line of unit traffic is now graded on three questions:
+
+| Question | What it looks for |
 | --- | --- |
-| Radio | `** [S: 1 \| CH: BASE] Kiara Eponimos says: 25M14, clear.` |
-| Local speech | `Connor Myer says: Alpr.` (also `shouts:`, `says (to X):`) |
-| HQ / duty | `[HQ] Police Officer II Connor Myer has gone on duty under 2W63!` |
-| Dispatch tags | `[DISPATCH]`, `[RADAR]`, `[GPS]`, `[EQUIPMENT]` |
-| Emergency call card | the five-line `********** EMERGENCY CALL **********` block |
-| OOC / PMs | `(( (10) Sergeant II Kayayday: no ))` - detected so they can be ignored |
+| **What is being asked for?** | Backup -> Code 3. An additional unit, supervisor or air unit -> Code 2. |
+| **What happened?** | 19 incident categories - officer needs help, hostage, shooting, stabbing, pursuit, weapon, robbery, medical, violence, fire, burglary, collision, vehicle, impaired driver, disturbance, theft, suspicious, traffic stop, in custody. Recognised from plain English *and* from penal codes (187, 211, 207, 242, 415, 459, 10851, 23152...). |
+| **Where?** | Resolved against the street and district gazetteer, so typos are corrected and the RD can be worked out. |
 
-Radio traffic keeps its **sub-channel** (`BASE`, `TRAFFIC`, `SPLX-1`, `L-TAC1`, `MA-1`) and slot
-number, so base radio can be told apart from a tactical channel. Because the text is exact, call
-signs and plates are never misread.
+In-progress wording (`in progress`, `right now`, `active`) and escalators
+(`multiple`, `several`, `crowd`, `gang`) raise the grade. So:
+
+```
+25T15, I need backup on Calais.
+  -> All units, twenty-five Tom fifteen is requesting backup at Calais,
+     Calais. R D, fourteen fifty five. Code 3, respond emergency and identify.
+
+25T15, active brawl at Hawick's Clothing, roll backup
+  -> All units, twenty-five Tom fifteen reports a fight in progress at
+     Hawick's Clothing, Hawick's Clothing and is requesting backup.
+     R D, twelve twenty one. Code 3, respond emergency and identify.
+
+2 Adam 55, requesting an additional unit at Elgin Avenue
+  -> Additional unit requested for two Adam fifty-five at Elgin Avenue,
+     Elgin Avenue. R D, oh six oh five. Any available unit to handle,
+     Code 2, identify.
+```
+
+Note that **backup is always read as a priority** and never needs a request
+verb - `backup on Calais` counts on its own - because missing a backup request
+is far worse than announcing one. An additional unit is only a request when an
+actual request verb introduces it, so `anyone know where the supervisor is`
+is chatter, not a request for a supervisor.
+
+Out-of-character chatter is rejected outright, whatever it contains. Turn the
+whole thing off with `flagging.radio_traffic: false`.
+
+**One behaviour change worth knowing:** radio traffic is not filtered by
+`scope`, so a *different* unit asking for backup will still be broadcast even
+when your other features are set to `scope: own`. That is deliberate - relaying
+backup requests to everyone is the dispatcher's job - and it is what "watch the
+whole chat log" means. `code_six` and the other unit-traffic acknowledgements
+still honour `scope` exactly as before.
+
+## What bypasses the brain
+
+Unit traffic - code 6, panic, CAD updates, clear, code 7, OPG, EOW, out status,
+MDC and alarms - **always** bypasses the brain, because your `scope` settings
+already decided whether you want to hear it.
+
+Radio traffic is the one exception: it is graded by the intent reader described
+above rather than by the 911-call lexicon, because that lexicon knows nothing
+about "roll backup" and scored such lines at zero. The 911-call scoring below
+applies to 911 calls and chat reports.
 
 ---
 
+# 16. Streets, districts and RDs
 
-### Testing without the game
+New in 1.6.0.
 
-You do not need to be in game, in a server, or even online to test the app. There
-are four ways to drive it, easiest first.
+## Typo correction
 
-**a) The chat simulator (no game, no server).** `tools\simulate_chat.py --fivem` writes a
-fake `current-session.txt` and feeds realistic chat into it on a timer, exactly the way
-the Chat Log Assistant does - radio traffic, local chat, panic calls and full emergency
-call cards:
+The app ships a gazetteer of **242 streets, 85 districts and 46 landmarks**
+across Los Santos and Blaine County, plus the numbered highways.
 
+Callers misspell things constantly. Locations are now corrected **before**
+anything is spoken:
+
+| Caller typed | Dispatcher says |
+|---|---|
+| Little Soeul | Little Seoul |
+| Vinwood Blvd | Vinewood Boulevard |
+| Innocense Blvd | Innocence Boulevard |
+| Sandy Shorez | Sandy Shores |
+| Paleto Bey | Paleto Bay |
+| Del Pero | Del Perro |
+| Maze Bank Towr | Maze Bank Tower |
+
+It also expands abbreviations (`Blvd` -> `Boulevard`, `St` -> `Street`) and
+formats intersections (`Alta & Spanish` -> `Alta Street and Spanish Avenue`).
+
+Crucially, it **refuses to guess**. Nonsense like `asdkjhasd`, `my house` or a
+vehicle model like `Tavros` does not match a street, so the app falls back to
+"refer to CAD for location" rather than inventing somewhere.
+
+```yaml
+geo:
+  enabled: true
+  correct_typos: true
+  threshold: 0.78   # raise to 0.85 for conservative, lower to 0.70 for aggressive
+  speak_rd: true
 ```
-cd "C:\path\to\911 Dispatch Relay"
-py tools\simulate_chat.py --fivem --interval 4
-```
 
-It prints the path of the fake file. Paste that into **Settings > Chat log input >
-File path**, switch **Auto-detect the file on start** OFF, Save, then press
-**Start**. You will hear real dispatch audio for made-up calls. Useful flags:
-`--interval 2` (faster), `--no-loop` (play once instead of repeating), `--once` (dump
-it all at once), `--list` (just print the scenario). By default it loops until you press
-Ctrl+C, which is what you want: the app deliberately ignores whatever was already in the
-file when you pressed Start, so chat has to keep arriving while it is listening.
+## RDs (reporting districts)
 
-**b) Replay your own real chat log.** `current-session.txt` survives after you quit
-the game, so this session's chat is still sitting on disk. Replay it line by line as
-if it were happening live:
+Real LAPD broadcasts close with the incident number and the reporting district:
 
-```
-py tools\simulate_chat.py --fivem --from-file "$env:LOCALAPPDATA\GTAW-Log-Parser-FiveM\current-session.txt"
-```
+> *"...Incident 171 in RD 193."*
 
-This only ever reads your real file; the simulated copy is written elsewhere. This
-is the most realistic test there is, because it is your actual radio channel, your
-actual call signs and your actual calls.
+Every 911 call-out with a location now ends the same way:
 
-**c) `replay_last` against the real file.** Point the app at your real chat log
-and set `input_source.replay_last: 20` in `config.yaml`. On Start it processes the
-last 20 lines already in the file instead of ignoring the backlog. Set it back to
-`0` for normal use, or you will re-hear old traffic every time you press Start.
+> *All units, a 302 burglary at Power Street. ... Incident four one two two.
+> **R D, oh one forty six.** Code 2. Units to handle, identify.*
 
-**d) Text-only check, no audio.** `py tools\test_flag.py` pushes sample lines
-through the flagger and prints what would have been flagged. Fastest way to test
-your call signs and patterns without spending TTS credits.
+The rules, exactly as specified:
 
-To test **auto-detection** itself, point the `GTAW_FIVEM_LOG` environment variable
-at any file and press **Detect file** - it is checked before the real location.
-(The old RAGE MP `RAGEMP_ROOT` override still works too.)
+- Always spoken as the letters **"R D"**, never the words "reporting district".
+- Always **exactly four digits**.
+- Spoken in natural two-and-two pairs, not four separate digits:
 
-## 9. What gets read
+| RD | Spoken |
+|---|---|
+| 1313 | thirteen thirteen |
+| 4051 | forty fifty one |
+| 2010 | twenty ten |
+| 1300 | thirteen hundred |
+| 0105 | oh one oh five |
 
-**Chat lines** containing your configured patterns (`911`, `*dials 911*`, `[EMS]`, `[PD]`).
-
-**Call cards** like the MDC / in-game 911 panel, e.g.:
-```
-====== CALL ======
-Call ID: #237023
-Situation: There's a dead body in the street.
-Location: Rockford Hills, West Eclipse, Mad Wayne Thunder
-Phone Number: 50947953
-```
-This becomes something like:
-> "All units, a two oh two murder at Rockford Hills, West Eclipse, Mad Wayne Thunder, just occurred. Incident seven oh two three. Code three. Units responding, identify."
-
-Rules applied to call cards:
-- **San Andreas Penal Code** is used for the crime (e.g. 202 murder, 215 robbery, 216 armed robbery, 302 burglary, 306 grand theft auto, 207 ADW, 707 shots fired). The mapping lives in `modules/llm.py` (`_INCIDENTS`); the LLM prompt lives in `config.yaml` (`llm.system_prompt`).
-- **Call ID is always called the "incident"**, only its **last four digits** are read, and it is spoken every time (works with or without a leading `#`).
-- The **location is always included**.
-- The **caller's name and phone number are never read**.
-- Every dispatch **ends with an LAPD closing** such as "Units responding, identify." or "Any unit to handle, identify." (these rotate).
-- **Non-emergency and landline calls are never spoken.** Only genuine emergencies trigger TTS; anything classified as non-emergency (or containing words like "landline" / "non-emergency") is logged but skipped. Turn this off with `llm.emergency_only: false`.
-- Toggle the call-card parser with `flagging.call_block.enabled`.
+- RDs are **invented but stable**: the same location always gets the same RD,
+  for the whole session and across restarts. `Grove St` and `Grove Street` get
+  the same RD, and so do `Little Soeul` and `Little Seoul`. First two digits
+  are derived from the district's LAPD division, so nearby streets get related
+  RDs.
 
 ---
 
-## 10. Configuration reference (`config.yaml`)
+# 17. Alarms
 
-- **flagging.ignore_channels**: channels never treated as radio (PMs, OOC, /me, /do, local).
-- **input_source.capture**: `auto` reads FiveM directly; `off` only reads a log file.
-- **input_source.capture_poll**: seconds between reads of the in-game chat box (default `0.5`).
-- **input_source.source**: `auto` (FiveM first, then RAGE MP), or force `fivem` / `ragemp`.
-- **input_source.path**: full path to the chat log. Blank = auto-detect.
-- **input_source.auto_detect** / **server_fingerprint**: find the file automatically, matching the server name (`GTA World`).
-- **input_source.use_watchdog**: instant file-change notifications; `false` = polling only.
-- **input_source.poll_interval** / **debounce_ms**: safety-net re-check interval, and how long to wait after a change before reading so a half-written file is never parsed.
-- **input_source.retry_attempts** / **retry_delay**: retries for when the game client has the file locked.
-- **input_source.replay_last**: re-process this many existing lines on start (`0` = only brand-new chat).
-- **location.track_area_from_radio**: learn your current area from your own radio traffic, for area call-outs.
-- **flagging.patterns**: regex list.
-- **updates.allow_prerelease**: when false the newest stable release wins, and pre-releases are only used if the repository has nothing else.
-- **flagging.status_dedup_sec**: seconds a repeated status call ("25T15, clear.") stays suppressed before it may be read again. Default 90. **min_body_length**, **fuzzy_threshold** (dedup strictness), **dedup_history**. **call_block.enabled**: parse call cards.
-- **llm**: `enabled`, `base_url`, `model`, `api_key`, `system_prompt` (the LAPD dispatcher persona), `verify_flags` (opt-in AI double-check of borderline flags before dispatch).
-- **tts**: `provider`, `speak_digits`, and per-provider settings (`elevenlabs`, `edge`, `google`, `pyttsx3`).
-- **radiofx**: `intensity`, `bandpass_low_hz`, `bandpass_high_hz`, `noise_level`, `distortion`, `key_click`.
-- **playback**: `device` (null = default), `volume`, `max_queue`.
-- **alert**: short tone played before each dispatch (`path`, `volume`, `gap_ms`).
-- **ui**: `mode` (`gui`/`cli`), `recent_limit`.
+```yaml
+flagging:
+  alarms:
+    enabled: true    # property alarms
+    vehicle: true    # vehicle alarms from security firms
+```
 
----
+## The vehicle alarm bug (fixed in 1.6.0)
 
-## 11. Troubleshooting
+In-game security firm notifications look like:
 
-- **`No chat log file set`** - press **Detect file** on the Dashboard, or set `input_source.path` by hand (section 3).
-- **Nothing is ever read** - the path is wrong, or the client hasn't written its storage yet. Log in to GTA World once, then press **Detect file** again. **Show Chat** tells you whether lines are arriving.
-- **Chat arrives late** - the Chat Log Assistant polls the game about twice a second and flushes on its own schedule. Lowering `input_source.debounce_ms` / `poll_interval` helps a little, but the flush interval is set by the game, not the app.
-- **`ModuleNotFoundError: pyaudioop` / `audioop`** - run `py -m pip install -r requirements.txt` (installs `audioop-lts` on Python 3.13+).
-- **`402 Payment Required` (ElevenLabs)** - free plan; use your own cloned voice ID, or switch `tts.provider` to `edge`.
-- **`[WinError 2]`** - ffmpeg missing; `imageio-ffmpeg` should cover it, otherwise install ffmpeg and add to PATH.
-- **No audio** - check the **Test** button, `playback.device`, system volume, and that a `dispatch_alert.wav` exists in `assets/`.
-- **Old chat is announced when you press Start** - set `input_source.replay_last: 0` so only brand-new lines are read.
-- **Numbers sound wrong** - keep `tts.speak_digits: true`.
-- **`ModuleNotFoundError: watchdog`** - run `py -m pip install -r requirements.txt`. Without it the app falls back to plain polling, so it still works, just a little less instantly.
-- **Call ID / incident not spoken** - make sure the call card has a Call ID line (with or without `#`) and `flagging.call_block.enabled: true`. Only the last four digits are read.
-- **A call didn't get read** - if it was classified non-emergency/landline it is skipped by design. Set `llm.emergency_only: false` to read everything.
+```
+Security Firm: vehicle alarm was set off on Tavros closest street: Alta Street
+```
+
+The app used to take the text after "set off on" as the location, so it
+broadcast **"location Tavros"** - and Tavros is a motorcycle, not a place.
+
+There is now a gazetteer of about **400 GTA V vehicle models**. The parser:
+
+1. Identifies the vehicle model and reports it **as the vehicle**.
+2. Prefers the `closest street:` value as the location.
+3. Rejects any location candidate that is a known vehicle model.
+4. Prefers candidates that match a real street or district.
+
+| Input | Location | Vehicle |
+|---|---|---|
+| `set off on Tavros closest street: Alta Street` | Alta Street | Tavros |
+| `set off on a Sultan RS, closest street: Vinewood Boulevard` | Vinewood Boulevard | Sultan RS |
+| `set off on Akuma closest street: Power Street` | Power Street | Akuma |
+| `set off on Little Seoul closest street: Decker Street` | Decker Street | - |
+
+Vehicle alarms are now **on by default**, since they work correctly.
 
 ---
 
-## 12. Installing pywin32 (system tray + monitor placement)
+# 18. MDC Lookup Assistant
 
-`pywin32` provides the Windows APIs used for the system-tray icon and for opening the window on a chosen monitor. It is Windows-only and already listed in `requirements.txt`, but if those features error out, install it directly:
+Optional. Lets units run name and plate lookups over the radio.
 
-1. Open a terminal in the project folder (activate your venv if you made one).
-2. Install it:
-   ```
-   py -m pip install pywin32
-   ```
-3. If you still get import errors (rare), run the one-time post-install step from an **Administrator** terminal (adjust the path to your Python version, or use `.venv\Scripts\pywin32_postinstall.py` if you used a venv):
-   ```
-   py -m pip install --upgrade pywin32
-   python "%LOCALAPPDATA%\Programs\Python\Python312\Scripts\pywin32_postinstall.py" -install
-   ```
-4. Verify:
-   ```
-   py -c "import win32gui; print('pywin32 OK')"
-   ```
+> **Read this first.** It logs into the GTA World MDC on your behalf. Only use
+> it on an account you control, and only if your server permits it. Your
+> password is **never stored** - it is held in memory for the session and used
+> once to obtain a session cookie.
 
-pywin32 is entirely optional - without it you only lose the tray icon and the “open on monitor” preference.
+```yaml
+mdc_lookup:
+  enabled: false
+  scope: own
+  username: ''
+  # password is entered in the GUI at runtime, never saved to disk
+```
+
+Enable it in **Settings > MDC Lookup**, enter credentials, and it answers
+"Dispatch, run a name on ..." style requests. Needs `requests` and
+`beautifulsoup4`. Rate limits are built in.
 
 ---
 
-## 13. Project structure
+# 19. Full config reference
+
+`config.yaml` lives in the app folder; your edited copy lives in
+`%APPDATA%\911 Dispatch Relay\config.yaml`.
+
+### `flagging`
+
+| Key | Default | What it does |
+|---|---|---|
+| `patterns` | `911`, `[EMS]`, `[PD]`... | Regexes that mark a line as a 911 call |
+| `require_callsigns` | `false` | `true` = `own` means exactly your list |
+| `min_body_length` | `6` | Ignore shorter messages |
+| `fuzzy_threshold` | `0.82` | Duplicate-detection sensitivity |
+| `dedup_history` | `400` | Lines remembered for dedup |
+| `status_dedup_sec` | `90` | Suppression window for repeated status calls |
+| `dedup_cooldown_sec` | `0` | Keep `0` to avoid re-reading re-rendered chat |
+| `radio_traffic` | `true` | Read unit-to-dispatch traffic, including plain-language requests with no code word |
+| `ignore_channels` | pm, ooc, me, do... | Channels never treated as radio |
+| `require_chat_structure` | `true` | Strict: needs real chat structure. Stops log noise |
+| `call_block.enabled` | `true` | Parse MDC 911 call cards |
+| `skip_own_names` | `[]` | Character names to ignore |
+| `panic_button` | `true` | React to panic-button alerts |
+| `cad_updates` / `code_six` / `clear_ack` / `code_seven` / `opg` / `end_of_watch` / `out_status` | on, `scope: own` | Unit-traffic features |
+| `alarms.enabled` / `alarms.vehicle` | `true` / `true` | Property and vehicle alarms |
+
+### `brain`
+
+See [section 15](#15-the-brain).
+
+### `geo`
+
+See [section 16](#16-streets-districts-and-rds).
+
+### `llm` (Smart Dispatch)
+
+See [section 12](#12-turning-smart-dispatch-on).
+
+### `tts`
+
+See [sections 7-9](#7-voice-setup).
+
+### `radiofx`
+
+| Key | Default | What it does |
+|---|---|---|
+| `enabled` | `true` | Radio effect on/off |
+| `intensity` | `0.6` | Overall strength |
+| `bandpass_low_hz` | `300` | Low cut |
+| `bandpass_high_hz` | `3000` | High cut |
+| `noise_level` | `0.004` | Background static |
+| `distortion` | `0.35` | Clipping/grit |
+| `key_click` | `true` | Mic key clicks |
+
+### `alert`
+
+| Key | Default | What it does |
+|---|---|---|
+| `enabled` | `true` | Alert tone before call-outs |
+| `scope` | `all` | `all` = every call-out; `priorities` = **only** Code 3 / officer-in-distress |
+| `path` | `assets/dispatch_alert.wav` | Your own WAV works here |
+| `volume` | `0.9` | Tone volume |
+| `gap_ms` | `150` | Silence between tone and speech |
+
+**The `priorities` bug (fixed in 1.6.0):** priority used to be re-guessed by
+pattern-matching the finished speech, and that pattern included words like
+`burglary`, `fire`, `crash` and `threat`. So a cold Code 2 burglary report was
+classified as a priority and the tone played. The app now uses the response
+code the dispatcher actually broadcast - Code 3 means priority, Code 2 does
+not. `priorities` finally means priorities.
+
+### `playback`
+
+| Key | Default | What it does |
+|---|---|---|
+| `device` | `null` | Output device (pick in Settings) |
+| `volume` | `1.0` | Master volume |
+| `max_queue` | `12` | Max queued call-outs before dropping |
+
+### `ui`
+
+| Key | Default | What it does |
+|---|---|---|
+| `mode` | `gui` | `gui` or `cli` |
+| `theme` | `light` | `light` or `dark` |
+| `recent_limit` | `20` | Rows in the call feed |
+| `open_monitor` | `0` | Which display to open on |
+| `sidebar_collapsed` | `false` | Start with icon-only sidebar |
+| `debug` | `false` | Live diagnostics console |
+| `minimize_to_tray` | `false` | Minimize to tray (needs pywin32) |
+
+### `updates`
+
+| Key | Default | What it does |
+|---|---|---|
+| `enabled` | `true` | Allow update checks at all |
+| `check_on_start` | `true` | Check quietly when the app opens |
+| `manifest_url` | GitHub releases API | Where to look for releases |
+| `allow_prerelease` | `false` | Also offer pre-release builds |
+| `allow_reinstall` | `true` | Offer a rebuilt release that has the same version number |
+| `timeout` | `15` | Seconds to wait for the update server |
+
+`allow_reinstall` exists because releases get rebuilt under the same tag. With
+it `true`, the startup check tells you when the published v1.6.0 build is newer
+than the one you installed. Set it `false` if you only want to hear about
+higher version numbers; pressing **Check for updates** by hand still forces the
+reinstall either way.
+
+---
+
+# 20. Testing without the game
+
+You do not need to be in game to test.
+
+### Speak test
+
+**Dashboard > Speak test.** Confirms voice, radio effect and playback.
+
+### Feed it fake calls
+
+```bat
+python tools/simulate_chat.py
+```
+
+Writes realistic fake chat to a temp log. Point **Settings > Input source** at
+that file and click Start.
+
+### Test the flagger only
+
+```bat
+python tools/test_flag.py
+```
+
+Shows which lines are flagged and what dispatch text they produce - no audio,
+no API calls.
+
+### Try one line by hand
+
+```bat
+python tools/speak_util.py "there's a guy with a gun outside on little soeul"
+```
+
+Good for checking typo correction and RD output.
+
+---
+
+# 21. Troubleshooting
+
+### Nothing is flagged
+
+1. Is the log file actually growing? Open it in Notepad.
+2. Is your channel in `ignore_channels`? PM/OOC/me/do are ignored by design.
+3. Is `require_chat_structure: true` too strict for your server? Try `false`.
+4. Turn on `brain.log_decisions: true` - the brain may be suppressing it.
+5. Turn on `ui.debug: true` and watch the console.
+
+### It flags too much
+
+Raise `brain.threshold` to 25-35. Add channels to `ignore_channels`. Add
+character names to `skip_own_names`.
+
+### Code six / clear is read for other units
+
+Fixed in 1.6.0 - make sure you are actually on 1.6.0. Then set your call signs
+([section 14](#14-call-signs-and-scope)); `scope: own` with an empty list
+answers everyone unless `require_callsigns: true`.
+
+### The alert tone plays on routine calls
+
+Fixed in 1.6.0. Confirm `alert.scope: priorities`.
+
+### Update says "You are up to date" but the fix is not there
+
+Fixed in 1.6.0. The old check only installed a **strictly higher** version
+number, so a release rebuilt and re-uploaded under the same tag was refused and
+the button appeared to do nothing.
+
+Press **Check for updates** manually. A manual check now always offers the
+newest published build, even at the same version number, and tells you it is a
+reinstall. If it says the release has no installer attached, the release was
+published without the `.exe`, so open the release page and grab it by hand.
+
+Still stuck? Confirm `updates.enabled: true` and that `updates.manifest_url`
+points at your repository. Update installs are Windows-only and only work from
+an installed build, not when running from source.
+
+### Code six with backup is not raising the alert
+
+Fixed in 1.6.0. Backup is graded Code 3 and additional units Code 2
+([section 14](#14-call-signs-and-scope)). Confirm `alert.scope` is `priorities`
+or `all`, and that `flagging.code_six.enabled` is `true`.
+
+### A canine unit is not being recognised
+
+Fixed in 1.6.0. `K9 one`, `K9-1`, `K9 CH4`, `canine 1` and `R30K9` are all
+understood now. Add whichever form you use to your call signs.
+
+### The voice keeps changing / sounds like a chipmunk
+
+Fixed in 1.6.0. Also set `tts.allow_fallback: false` to pin one voice, and keep
+`stability: 0.85` and `style: 0.0` ([section 9](#9-keeping-the-voice-consistent)).
+
+### No audio at all
+
+1. **Speak test** on the Dashboard.
+2. Check `playback.device` in Settings.
+3. `pip install sounddevice numpy`
+4. For ElevenLabs/Google, confirm `ffmpeg -version` works.
+
+### ElevenLabs 401 Unauthorized
+
+Your key lacks the **Text to Speech** scope, or it was revoked. Recreate it per
+[section 8](#8-elevenlabs-key-and-permissions).
+
+### ElevenLabs 429
+
+Out of monthly characters, or rate-limited. Check your ElevenLabs usage page,
+or switch to `provider: edge` which is free.
+
+### Smart Dispatch is not being used
+
+See the checklist in [section 12](#12-turning-smart-dispatch-on). Most often
+`base_url` is missing `/v1`, or `emergency_only: true` is routing routine calls
+to the offline generator by design.
+
+### The location is wrong
+
+Raise `geo.threshold` to `0.85` so only near-perfect typos are corrected.
+
+### Tray icon / monitor placement missing
+
+```bat
+pip install pywin32
+```
+
+Then restart. If you installed Python from the Microsoft Store, reinstall it
+from python.org; the Store build blocks pywin32.
+
+---
+
+# 22. Performance tuning
+
+The app is light - a few percent CPU idling. If you need more headroom:
+
+| Change | Effect |
+|---|---|
+| `pip install rapidfuzz` | ~10x faster street matching |
+| `llm.emergency_only: true` | Far fewer API calls |
+| `llm.enabled: false` | No network latency; offline generator only |
+| `radiofx.enabled: false` | Skips audio filtering |
+| `ui.debug: false` | No diagnostics overhead |
+| `flagging.dedup_history: 200` | Slightly less memory |
+| `playback.max_queue: 6` | Drops backlog faster during a busy scene |
+| Use the log file, not screen capture | OCR is by far the most expensive input mode |
+
+Built-in optimisations in 1.6.0: street lookups are indexed and LRU-cached
+(instant on repeat locations); the brain is pure regex with no network calls;
+RD generation is a hash, not a lookup; and duplicate suppression stops the same
+incident being sent to the AI twice.
+
+---
+
+# 23. Project structure
 
 ```
 911 Dispatch Relay/
-  main.py               orchestrator + CLI + classic-UI fallback
-  config.yaml           all settings
-  requirements.txt      dependencies
-  README.md             this file
-  assets/
-    dispatch_alert.wav  alert tone played before each dispatch
+  main.py                 App entry point, pipeline orchestration
+  config.yaml             All settings
+  README.md               This file
+  CHANGELOG.md            Version history
+  BUILD.md                How to build the .exe and installer
+  requirements.txt        Python dependencies
   modules/
-    gui_app.py          modern CustomTkinter UI (Dashboard / Settings / Report a bug / About)
-    nui_capture.py      reads FiveM's chat live out of the running game (local debug port)
-    file_watcher.py     watches the FiveM (or RAGE MP) chat log and parses it into messages
-    displays.py         monitor enumeration for window placement
-    flagger.py          chat + call-card detection and dedup
-    llm.py              LAPD dispatch rewriting (offline + API)
-    reporter.py         redacted, rate-limited bug / error reporting via Discord webhook
-    tts.py              text-to-speech + digit verbalization
-    radiofx.py          radio filter
-    player.py           queued local playback
-    mdc_lookup.py       optional MDC Lookup Assistant (rate-limited worker)
-    mdc_auth.py         optional manual browser login + encrypted session (DPAPI)
-    mdc_parser.py       optional HTML parsing of MDC results
+    flagger.py            Finds 911 calls and radio traffic; scope rules
+    brain.py              Decides what deserves radio traffic        [NEW 1.6.0]
+    geo.py                GTA V streets/districts, typo fixing, RDs   [NEW 1.6.0]
+    vehicles.py           GTA V vehicle model gazetteer               [NEW 1.6.0]
+    llm.py                Smart Dispatch: offline generator + AI rewrite
+    tts.py                Voice synthesis, text cleanup, normalisation
+    radiofx.py            Radio band-pass, static, key clicks
+    player.py             Audio output queue
+    gui_app.py            The GUI
+    file_watcher.py       Tails the chat log
+    nui_capture.py        Screen-capture/OCR input
+    mdc_parser.py         Parses MDC 911 call cards
+    mdc_lookup.py         MDC Lookup Assistant
+    mdc_auth.py           MDC login (password never stored)
+    reporter.py           Bug reporting
+    hotkeys.py            Global Start/Stop hotkeys
+    displays.py           Monitor enumeration
+    icons.py              UI icons
+    updater.py            Update checks
+    app_paths.py          Version + paths
+    usage.py              Token/usage tracking
+  tools/
+    test_flag.py          Flagger test harness
+    simulate_chat.py      Fake chat generator
+    speak_util.py         Speak one line from the CLI
+    test_mdc.py           MDC parser tests
+  assets/
+    dispatch_alert.wav    Alert tone
+    app.ico               App icon
 ```
-
-### Does the anti-flagger need an API key?
-
-**No.** All the flagging and dispatch logic — 911 chat/MDC card detection, dedup, panic, CAD updates, code six, code seven, clear/back-in-service, and the LAPD radio wording — is 100% local (regex + heuristics + an offline generator). It works perfectly with **no API key at all**. A Dispatch AI key is optional and only adds LLM-polished rewrites and the opt-in "AI verification of borderline flags" feature.
-
-### Dispatch acknowledgements (code seven & clear)
-
-- **Code seven** (out of service / meal): "25T15, show me code seven" or "25T15, code seven at Pershing Square" → acknowledged with rotating LAPD wording.
-- **Clear** (back in service): "25T15, show me clear", "25T15, clear", or "25T15, show me available" → acknowledged with rotating LAPD wording.
-- Both are on by default and configurable under **Settings > Flagging** (scope: your own call signs or all units).
 
 ---
 
-## 14. Optional: MDC Lookup Assistant
+# 24. Legal / fair use
 
-> **This module is optional and OFF by default.** It is separate from everything above and does nothing until you configure it and switch it on.
-
-**What it does:** listens for spoken "run this name / plate" requests it sees on your screen, looks them up in **GTA World's Web MDC** (the browser system at <https://mdc.gta.world/> - *not* the game), and reads the result back over the radio voice. It is strictly **read-only** - it only performs searches and never edits anything.
-
-### ⚠ Read this before enabling
-
-- **Terms of Service / ban risk.** Automating a logged-in website may violate GTA World's rules on third-party tools and automation. Enabling this is entirely at your own risk, on your **own account only**. If you are not comfortable with that risk, leave it off.
-- **It will not work out of the box.** GTA World's real MDC search URLs and page markup are not shipped with the app (they're private, logged-in pages). The `mdc_lookup.name_search_url`, `mdc_lookup.plate_search_url`, and `mdc_lookup.selectors` values in `config.yaml` are **placeholders you must fill in yourself** by inspecting the live site with your browser's DevTools (Network + Inspect). Until you do, lookups will fail gracefully and speak nothing useful.
-
-### How the login works (your password is never stored)
-
-1. Go to **Settings > MDC Lookup (optional) > Log in**.
-2. A real browser window opens to <https://mdc.gta.world/>. **You** log in there yourself, exactly as you normally would.
-3. When you're logged in, close the browser window. The app captures only the resulting **session cookies** and stores them **encrypted with Windows DPAPI** (tied to your Windows user account) in a separate file. Your username and password are never seen or stored.
-4. **Log out** clears that stored session at any time.
-
-### Configuring it
-
-In **Settings > MDC Lookup (optional)**:
-
-- **Enable MDC lookups** - master switch (keep off until configured).
-- **Lookups apply to** - `own` reacts only when one of your own call signs asks for the run; `all` reacts to any unit.
-- **Cooldown** - minimum seconds between requests (default 8). Please don't lower this recklessly.
-- **Response channel label** - optional text spoken before each result (e.g. "TAC 2").
-- **Name / Plate lookup phrases** - the trigger regexes, one per line. Each name pattern must contain a `(?P<target>...)` group; each plate pattern a `(?P<plate>...)` group. Defaults recognise phrases like *"...let me get a code ten on John Doe"*, *"run John Doe for me dispatch"*, *"look up a plate GHX829"*, and *"run plate GHX829"*.
-
-The search URLs, HTML selectors, login-page markers, cooldown, queue size and timeout live under the `mdc_lookup:` block in `config.yaml` (each line is commented).
-
-### Dependencies
-
-This module needs two extra packages (already in `requirements.txt`) plus a one-time browser download:
-
-```
-py -m pip install beautifulsoup4 playwright
-py -m playwright install chromium
-```
-
-The Chromium browser used for the manual login is **not** bundled inside the packaged `.exe`; the `playwright install` step downloads it locally.
-
-### Safety built in
-
-- **Read-only** - only performs searches, never writes.
-- **Rate limited** - at most one request per cooldown, a small bounded queue (overflow dropped + logged), and exponential backoff on errors.
-- **Session-expiry aware** - if your MDC session expires, it announces "Web MDC session expired - please log in again" and stops, without crashing or looping.
-- **Local request log** - a rotating `mdc_requests.log` (timestamp, type, target) is kept in your app data folder.
-
----
-
-## Legal / fair use
-
-For personal use on a single machine. It only reads visible pixels and produces local audio, like a person reading chat aloud. It does not read game memory/files/network, performs no automated in-game actions, and does not broadcast audio to anyone else. Follow your server's rules on third-party tools.
-
-## Testing without being in game
-
-Everything below runs from the app folder. `py` on Windows, `python3` elsewhere.
-
-**1. Check whether a radio line gets flagged, and hear the reply**
-
-```
-py tools\test_flag.py "25T15, code six at Forum Drive."
-py tools\test_flag.py --speak "25T15, code six at Forum Drive."
-```
-
-`--speak` runs the real pipeline: TTS voice, radio effect, alert tone, your
-output device. Add `--no-alert` to drop the tone.
-
-Other options:
-
-| Option | What it does |
-| --- | --- |
-| `--all` | Force every flag type on and scope them to "all" |
-| `--speak` | Read the dispatch reply out loud |
-| `--no-alert` | With `--speak`, skip the alert tone |
-| `--config PATH` | Use a different config.yaml |
-| `--config appdata` | Use the installed app's settings in `%APPDATA%` |
-
-The tool prints which config file it loaded, your call signs, and each scope.
-If nothing is flagged it tells you why - usually no call signs set, or MDC
-lookups switched off.
-
-**Two config files:** when you run from source, the app reads and saves the
-`config.yaml` in the app folder. The installed build reads and saves
-`%APPDATA%\911 Dispatch Relay\config.yaml` instead. Point the tools at the
-installed one with `--config appdata`.
-
-**2. Check what the MDC parser reads from a record**
-
-Save a record page from your browser (Ctrl+S), then:
-
-```
-py tools\test_mdc.py "C:\path\to\record.html"
-py tools\test_mdc.py "C:\path\to\dmv.html" --plate
-py tools\test_mdc.py "C:\path\to\record.html" --speak
-```
-
-It prints every field it parsed plus the line dispatch would say, so you can
-see immediately if a caution flag or a points value was misread.
-
-**3. Play a whole fake shift into the app**
-
-```
-py tools\simulate_chat.py --fivem
-py tools\simulate_chat.py --fivem --say "25T15, code ten on Joseph Panicucci."
-```
-
-It writes a fake `current-session.txt` and prints its path. In Settings, set the
-chat log input to that path, turn auto-detect off, Save, then Start. The app
-only reacts to lines written after you press Start.
-
+- Reads a **log file your own game client writes**. No memory reading, no code
+  injection, no automation of gameplay.
+- It is an accessibility and immersion aid. It does not play the game for you.
+- Check your server's rules before using it. Some servers restrict dispatch
+  tools. That is their call, not this app's.
+- Not affiliated with Rockstar Games, GTA World, or the Los Angeles Police
+  Department. LAPD codes and procedures are used for roleplay realism only.
+- **Never share your `config.yaml`** if you put keys in it. Prefer the
+  environment variables in [section 8](#8-elevenlabs-key-and-permissions).

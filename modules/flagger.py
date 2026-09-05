@@ -13,6 +13,38 @@ except Exception:  # pragma: no cover - script/frozen import styles
     except Exception:
         _fw = None
 
+# San Andreas gazetteer + vehicle model list. Both are used to keep a vehicle
+# MODEL from ever being announced as a LOCATION.
+try:
+    from modules.geo import is_known_place as geo_is_known_place
+    from modules.vehicles import find_model as find_vehicle_model
+    from modules.vehicles import is_vehicle_model
+except Exception:  # pragma: no cover - script/frozen import styles
+    try:
+        from .geo import is_known_place as geo_is_known_place
+        from .vehicles import find_model as find_vehicle_model
+        from .vehicles import is_vehicle_model
+    except Exception:
+        def geo_is_known_place(_text):
+            return False
+
+        def find_vehicle_model(_text):
+            return None
+
+        def is_vehicle_model(_text):
+            return False
+
+# Radio intent reader. This is what lets a transmission count as unit traffic
+# when it describes a real incident or asks for help in plain language, with no
+# code word anywhere in it ("active brawl at Hawick's, roll backup").
+try:
+    from modules.intent import analyze as radio_intent
+except Exception:  # pragma: no cover - script/frozen import styles
+    try:
+        from .intent import analyze as radio_intent
+    except Exception:
+        radio_intent = None
+
 # Live capture reads the game's own chat box, which prefixes lines with the
 # channel: "(pm) Connor Myer: ...", "(radio:BASE) Connor Myer: ...".
 _HUD_CHANNEL_RE = re.compile(
@@ -93,16 +125,52 @@ _RADIO_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
-_CALLSIGN_RE = re.compile(
-    r"^\s*([0-9]{1,2}[- ]?[A-Za-z]{1,4}[- ]?[0-9]{1,3}|[A-Za-z]{1,3}[- ]?[0-9]{2,3})\b"
+# K9 units never fit the numeric "1-Adam-12" shape. Chat spells them "K9-1",
+# "K9 one", "Canine 1", "K9 CH4" and, for supervisors, "R30K9". None of those
+# matched before, so canine traffic was silently dropped.
+_K9_WORD = r"(?:k[- ]?9|canine)"
+_NUM_WORD = (
+    r"(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+    r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)"
 )
+# Order matters: the most specific shapes must come first, or a prefix like
+# "R30" would match before "R30K9" is ever considered.
+_CALLSIGN_CORE = (
+    r"[A-Za-z]{1,3}[- ]?[0-9]{2,3}[- ]?" + _K9_WORD + r"|"
+    r"[0-9]{1,2}[- ]?[A-Za-z]{1,4}[- ]?" + _K9_WORD + r"|"
+    + _K9_WORD + r"[- ]?(?:ch(?:annel)?[- ]?)?(?:[0-9]{1,3}|" + _NUM_WORD + r")|"
+    r"[0-9]{1,2}[- ]?[A-Za-z]{1,4}[- ]?[0-9]{1,3}|"
+    r"[A-Za-z]{1,3}[- ]?[0-9]{2,3}|"
+    + _K9_WORD
+)
+_CALLSIGN_RE = re.compile(r"^\s*(" + _CALLSIGN_CORE + r")\b", re.I)
 
 _CODE_SIX_RE = re.compile(r"code\s*six|code\s*6\b", re.I)
+# Requesting BACKUP is a Code 3 (emergency) response; asking for an ADDITIONAL
+# unit is a routine Code 2. Both remain code sixes - dispatch marks the unit out
+# AND puts the request on the air in the same transmission.
+_CODE_SIX_BACKUP_RE = re.compile(
+    r"\bback[- ]?up\b|need(?:s|ing)?\s+(?:immediate\s+)?(?:help|assistance)|"
+    r"requesting\s+(?:immediate\s+)?assistance|\bcover unit\b|\ba cover\b|"
+    r"\bcode\s*3\b|\bexpedite\b",
+    re.I,
+)
+# An emergency volunteered inside a code six ("I have got a body on the
+# ground") has to escalate that same transmission to Code 3.
+_CODE_SIX_EMERGENCY_RE = re.compile(
+    r"body on the ground|body in the|man down|woman down|person down|"
+    r"unresponsive|not breathing|no pulse|\bdoa\b|\bgsw\b|gunshot|"
+    r"bleeding|stabbed|\bstabbing\b|hostage|overdose|"
+    r"(?:gun|weapon|knife|blade)\s+(?:drawn|pulled|out)|"
+    r"fight(?:ing)? in progress|actively resisting|\btaser\b|"
+    r"ambulance|\bems\b|rescue ambulance",
+    re.I,
+)
+# These are separate emergencies in their own right rather than a code six with
+# a detail attached, so they keep going out through the normal radio path.
 _CODE_SIX_HANDOFF_RE = re.compile(
-    r"backup|back[- ]?up|need(?:s|ing)?\s+(?:help|assistance)|shots fired|"
-    r"officer (?:down|needs|in distress|in trouble)|man down|in pursuit|"
-    r"foot pursuit|vehicle pursuit|\b998\b|\b999\b|11[- ]?99|"
-    r"supervisor|air ?unit|air ?ship|ambulance|\bems\b|fire|rescue",
+    r"shots fired|officer (?:down|needs|in distress|in trouble)|in pursuit|"
+    r"foot pursuit|vehicle pursuit|\b998\b|\b999\b|11[- ]?99",
     re.I,
 )
 _CODE_SIX_LOC_RE = re.compile(
@@ -115,7 +183,8 @@ _CODE_SIX_LOC_RE = re.compile(
 # the unit out AND puts the request on the air in the same transmission.
 _CODE_SIX_NEEDS_RE = re.compile(
     r"\b(?:additionals?|additional units?|another unit|one more unit|"
-    r"more units?|second unit|extra unit|units? to assist|cover unit|a cover)\b",
+    r"more units?|second unit|extra unit|units? to assist|"
+    r"supervisor|air ?unit|air ?ship)\b",
     re.I,
 )
 # A spoken location ends where the sentence does; everything after that is the
@@ -264,6 +333,28 @@ _LAST_LOCATION_RE = re.compile(
     r"(?:was\s+|at\s+|near\s+|:\s*|-\s*)?(?P<loc>[^.;|]{3,60})",
     re.I,
 )
+
+# The authoritative location in a security firm vehicle alarm. In game the
+# broadcast reads:
+#   "Security Firm: vehicle alarm was set off on <area> closest street: <street>"
+# "closest street" is ALWAYS a real street, so it wins over everything else.
+_CLOSEST_STREET_RE = re.compile(
+    r"\bclosest\s+street\s*(?:is\s+|was\s+|:\s*|-\s*|\s+)"
+    r"(?P<loc>[^.;|\n]{3,60})",
+    re.I,
+)
+# Secondary: the area named right after "set off on".
+_SET_OFF_ON_RE = re.compile(
+    r"\balarm\s+(?:was\s+)?(?:set|went)\s+off\s+(?:on|at|in|near)\s+"
+    r"(?P<loc>[^.;|\n]{3,60}?)"
+    r"(?=\s*(?:,|\.|;|\bclosest\b|\blast\b|$))",
+    re.I,
+)
+# Trailing junk that is never part of a street name.
+_LOC_TAIL_JUNK_RE = re.compile(
+    r"(?i)\s*\b(?:closest\s+street.*|last\s+(?:known\s+)?(?:location|seen).*|"
+    r"please\s+respond.*|any\s+unit.*|code\s*\d+.*)$"
+)
 # Wording that closes an alarm call instead of opening one.
 _ALARM_CLOSE_RE = re.compile(
     r"\bcode\s*(?:4|four)\b|\bunfounded\b|\bfalse\s+alarm\b|\bno\s+signs?\b|"
@@ -315,9 +406,7 @@ _CAD_UPDATE_RE = re.compile(
     r"\b(?:location|status)\s+update\b",
     re.I,
 )
-_ANY_CALLSIGN_RE = re.compile(
-    r"\b([0-9]{1,2}[- ]?[A-Za-z]{1,4}[- ]?[0-9]{1,3}|[A-Za-z]{1,3}[- ]?[0-9]{2,3})\b"
-)
+_ANY_CALLSIGN_RE = re.compile(r"\b(" + _CALLSIGN_CORE + r")\b", re.I)
 
 
 class Flagger:
@@ -391,11 +480,20 @@ class Flagger:
         )
         self.own_callsigns = [
             self._norm_callsign(c)
-            for c in (cfg.get("own_callsigns") or cad_cfg.get("callsigns") or [])
-            if str(c).strip()
+            for c in (
+                cfg.get("own_callsigns")
+                or cfg.get("callsigns")
+                or cad_cfg.get("callsigns")
+                or []
+            )
+            if str(c).strip() and self._norm_callsign(c)
         ]
-        # Empty = not configured; see _match_own_callsign.
+        self._own_callsign_set = frozenset(self.own_callsigns)
+        # Empty = not configured; see _scope_allows.
         self.callsigns_unset = not self.own_callsigns
+        # Set to True the first time an 'own' scope had to refuse because no
+        # call signs are configured. The UI reads this to prompt the operator.
+        self.needs_callsigns = False
         self.skip_names = [
             str(n).strip().lower()
             for n in (cfg.get("skip_own_names") or [])
@@ -403,6 +501,8 @@ class Flagger:
         ]
         self.stability_frames = max(1, int(cfg.get("stability_frames") or 1))
         self._frame_counts: dict = {}
+        # Per-line marker used by _scope_allows / process.
+        self._scope_refusal = False
 
     @classmethod
     def _normalize(cls, line: str) -> str:
@@ -687,28 +787,94 @@ class Flagger:
             for n in self.skip_names
         )
 
-    @staticmethod
-    def _norm_callsign(value: str) -> str:
-        return re.sub(r"[^a-z0-9]", "", str(value).lower())
+    # LAPD phonetic letters used inside call signs. "1-Adam-12", "1 Adam 12",
+    # "1A12" and "1adam12" are the SAME unit, so they must normalise the same.
+    _PHONETIC_LETTERS = {
+        "adam": "a", "boy": "b", "charles": "c", "charlie": "c", "david": "d",
+        "edward": "e", "frank": "f", "george": "g", "henry": "h", "ida": "i",
+        "john": "j", "king": "k", "lincoln": "l", "mary": "m", "nora": "n",
+        "ocean": "o", "paul": "p", "queen": "q", "robert": "r", "sam": "s",
+        "tom": "t", "union": "u", "victor": "v", "william": "w", "xray": "x",
+        "young": "y", "zebra": "z", "lima": "l", "tango": "t", "alpha": "a",
+        "bravo": "b", "delta": "d", "echo": "e", "foxtrot": "f", "golf": "g",
+        "hotel": "h", "india": "i", "juliet": "j", "kilo": "k", "mike": "m",
+        "november": "n", "oscar": "o", "papa": "p", "quebec": "q",
+        "romeo": "r", "sierra": "s", "uniform": "u", "whiskey": "w",
+        "yankee": "y", "zulu": "z",
+    }
+
+    _NUMBER_WORDS = {
+        "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+        "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10",
+        "eleven": "11", "twelve": "12", "thirteen": "13", "fourteen": "14",
+        "fifteen": "15", "sixteen": "16", "seventeen": "17",
+        "eighteen": "18", "nineteen": "19", "twenty": "20",
+    }
+
+    @classmethod
+    def _norm_callsign(cls, value: str) -> str:
+        """Canonical call sign key: '1-Adam-12' -> '1a12', 'K9 one' -> 'k91'."""
+        raw = str(value or "").lower()
+        # Fold every canine spelling onto one key so "K9-1", "K9 one",
+        # "Canine 1" and "K9 CH1" all compare equal.
+        raw = re.sub(r"\bcanine\b", "k9", raw)
+        raw = re.sub(r"\bk[- ]9", "k9", raw)
+        raw = re.sub(r"\bch(?:annel)?[- ]?(?=\d)", "", raw)
+        # Number words must be folded to digits BEFORE the phonetic pass, or
+        # "one" survives as text and 'K9 one' never equals 'K9-1'.
+        raw = re.sub(
+            r"[a-z]+",
+            lambda m: cls._NUMBER_WORDS.get(m.group(0), m.group(0)),
+            raw,
+        )
+        # Expand phonetic words to their letter before stripping separators.
+        raw = re.sub(
+            r"[a-z]+",
+            lambda m: cls._PHONETIC_LETTERS.get(m.group(0), m.group(0)),
+            raw,
+        )
+        return re.sub(r"[^a-z0-9]", "", raw)
 
     def _match_own_callsign(self, callsign: str) -> bool:
+        """
+        EXACT ownership test.
+
+        Historically this returned True for every unit when no call signs were
+        configured, which is why 'scope: own' still announced everybody else's
+        code six. Ownership is now a strict, whole-call-sign comparison and an
+        empty list simply owns nothing - see _scope_allows for how that is
+        surfaced to the operator.
+        """
         n = self._norm_callsign(callsign)
-        if not n:
+        if not n or not self.own_callsigns:
             return False
-        if not self.own_callsigns:
-            # Nothing configured yet. Answering NOTHING makes the app look broken,
-            # so treat every unit as yours until you narrow it down in Settings -
-            # unless the operator asked for strict matching, in which case an
-            # empty list means exactly what it says.
-            if self.require_callsigns:
-                return False
-            self.callsign_fallback_hits += 1
+        return n in self._own_callsign_set
+
+    def _scope_allows(self, scope: str, callsign: str | None) -> bool:
+        """
+        Single gate for every 'own' vs 'all' feature.
+
+        scope == 'all'  -> answer every unit.
+        scope == 'own'  -> answer ONLY the configured call signs. If none are
+                           configured we answer nothing and raise a one-time
+                           warning, because silently answering everybody is the
+                           exact bug operators reported.
+        """
+        if str(scope).lower() != "own":
             return True
-        for o in self.own_callsigns:
-            if not o:
-                continue
-            if n == o or (len(o) >= 3 and (n.startswith(o) or o.startswith(n))):
-                return True
+        if not self.own_callsigns:
+            self.callsign_fallback_hits += 1
+            self.needs_callsigns = True
+            self._scope_refusal = True
+            return False
+        if not callsign:
+            self._scope_refusal = True
+            return False
+        if self._match_own_callsign(callsign):
+            return True
+        # Another unit's traffic. Remember the refusal so the generic radio
+        # fallback cannot pick this same line up again.
+        self._scope_refusal = True
         return False
 
     def _parse_panic(self, line: str) -> dict | None:
@@ -763,9 +929,7 @@ class Flagger:
             callsign = m2.group(1).strip() if m2 else None
         if not callsign:
             return None
-        if self.cad_scope == "own" and not (
-            callsign and self._match_own_callsign(callsign)
-        ):
+        if not self._scope_allows(self.cad_scope, callsign):
             return None
         low = body.lower()
         has_loc = bool(re.search(r"location|position", low))
@@ -790,7 +954,17 @@ class Flagger:
             return None
         if _CODE_SIX_HANDOFF_RE.search(body):
             return None
-        needs = "additional" if _CODE_SIX_NEEDS_RE.search(body) else None
+        # Backup is a Code 3 request; an additional unit is a routine Code 2.
+        # An emergency mentioned mid-transmission escalates the whole code six.
+        if _CODE_SIX_BACKUP_RE.search(body):
+            needs, priority = "backup", True
+        elif _CODE_SIX_NEEDS_RE.search(body):
+            needs, priority = "additional", False
+        else:
+            needs, priority = None, False
+        if _CODE_SIX_EMERGENCY_RE.search(body):
+            priority = True
+            needs = needs or "backup"
         m = _CALLSIGN_RE.match(body)
         callsign = m.group(1).strip() if m else None
         if not callsign:
@@ -798,9 +972,7 @@ class Flagger:
             callsign = m2.group(1).strip() if m2 else None
         if not callsign:
             return None
-        if self.code6_scope == "own" and not (
-            callsign and self._match_own_callsign(callsign)
-        ):
+        if not self._scope_allows(self.code6_scope, callsign):
             return None
         after = body[_CODE_SIX_RE.search(body).end():]
         location = None
@@ -827,6 +999,7 @@ class Flagger:
             "location": location,
             "details": details,
             "needs": needs,
+            "priority": priority,
             "raw": body,
         }
 
@@ -900,7 +1073,7 @@ class Flagger:
             callsign = m2.group(1).strip() if m2 else None
         if not callsign:
             return None
-        if self.clear_scope == "own" and not self._match_own_callsign(callsign):
+        if not self._scope_allows(self.clear_scope, callsign):
             return None
         if not self._is_new_status(body):
             return None
@@ -923,7 +1096,7 @@ class Flagger:
             callsign = m2.group(1).strip() if m2 else None
         if not callsign:
             return None
-        if self.code7_scope == "own" and not self._match_own_callsign(callsign):
+        if not self._scope_allows(self.code7_scope, callsign):
             return None
         after = body[_CODE_SEVEN_RE.search(body).end():]
         location = None
@@ -968,7 +1141,7 @@ class Flagger:
         if not m_opg or not _OPG_ASK_RE.search(body):
             return None
         callsign = self._line_callsign(body)
-        if self.opg_scope == "own" and not self._match_own_callsign(callsign or ""):
+        if not self._scope_allows(self.opg_scope, callsign):
             return None
         equipment = None
         eq = _OPG_EQUIP_RE.search(body)
@@ -1003,7 +1176,7 @@ class Flagger:
         if "?" in body:
             return None
         callsign = self._line_callsign(body)
-        if self.eow_scope == "own" and not self._match_own_callsign(callsign or ""):
+        if not self._scope_allows(self.eow_scope, callsign):
             return None
         if not self._is_new_status(body):
             return None
@@ -1029,7 +1202,7 @@ class Flagger:
         if len(re.sub(r"[^A-Za-z0-9]", "", where)) < 2:
             return None
         callsign = self._line_callsign(body)
-        if self.out_status_scope == "own" and not self._match_own_callsign(callsign or ""):
+        if not self._scope_allows(self.out_status_scope, callsign):
             return None
         if not self._is_new_status(body):
             return None
@@ -1044,7 +1217,12 @@ class Flagger:
     @staticmethod
     def _alarm_model(body: str):
         """Pull the vehicle model out of a security firm broadcast."""
-        m = _VEHICLE_MODEL_RE.search(body or "")
+        body = body or ""
+        # A known model name anywhere in the line is the most reliable signal.
+        known = find_vehicle_model(body)
+        if known:
+            return known
+        m = _VEHICLE_MODEL_RE.search(body)
         if not m:
             return None
         for key in ("model", "model2", "model3"):
@@ -1057,8 +1235,53 @@ class Flagger:
             val = re.sub(r"\s+", " ", val).strip(" ,.;-")
             if val.lower() in ("vehicle", "car", "auto", "alarm"):
                 continue
+            # Never report a real street as the model.
+            if geo_is_known_place(val) and not is_vehicle_model(val):
+                continue
             if 2 < len(val) <= 34:
                 return val
+        return None
+
+    @staticmethod
+    def _clean_alarm_location(value):
+        """Tidy a captured location and reject anything that is not a place."""
+        if not value:
+            return None
+        val = _LOC_TAIL_JUNK_RE.sub("", str(value))
+        val = re.sub(r"(?i)^\s*(?:a|an|the)\s+", "", val)
+        val = re.sub(r"\s+", " ", val).strip(" ,.;:-")
+        if len(re.sub(r"[^A-Za-z0-9]", "", val)) < 3:
+            return None
+        # THE core fix: a vehicle model is not a location.
+        if is_vehicle_model(val):
+            return None
+        return val
+
+    def _vehicle_alarm_location(self, body: str):
+        """
+        Resolve the location of a security firm vehicle alarm.
+
+        Priority order, strongest evidence first:
+          1. "closest street: <x>"   - always a real street
+          2. "set off on <x>"        - the area, if it is not a model
+          3. "last seen at <x>"      - legacy wording
+        Every candidate is validated against the GTA V gazetteer and rejected
+        outright if it is a vehicle model, which is what used to leak through
+        and produce "location Tavros".
+        """
+        candidates = []
+        for rx in (_CLOSEST_STREET_RE, _SET_OFF_ON_RE, _LAST_LOCATION_RE):
+            mm = rx.search(body)
+            if mm:
+                candidates.append(self._clean_alarm_location(mm.group("loc")))
+
+        # Prefer a candidate the gazetteer recognises.
+        for cand in candidates:
+            if cand and geo_is_known_place(cand):
+                return cand
+        for cand in candidates:
+            if cand:
+                return cand
         return None
 
     def _parse_alarm(self, line: str) -> dict | None:
@@ -1086,13 +1309,17 @@ class Flagger:
                 return None
             kind = "vehicle"
             model = self._alarm_model(body)
-        location = self._trailing_location(body, m.end())
-        if not location:
-            location = self._trailing_location(body)
         if is_vehicle:
-            ml = _LAST_LOCATION_RE.search(body)
-            if ml:
-                location = re.sub(r"\s+", " ", ml.group("loc")).strip(" ,.;-")
+            # Dedicated path: never let the model become the location.
+            location = self._vehicle_alarm_location(body)
+            if not location:
+                fallback = self._trailing_location(body, m.end()) or \
+                    self._trailing_location(body)
+                location = self._clean_alarm_location(fallback)
+        else:
+            location = self._trailing_location(body, m.end())
+            if not location:
+                location = self._trailing_location(body)
         callsign = self._line_callsign(body)
         if not location and callsign and not is_vehicle:
             return None
@@ -1180,7 +1407,7 @@ class Flagger:
         if not callsign:
             m2 = _ANY_CALLSIGN_RE.search(body)
             callsign = m2.group(1).strip() if m2 else None
-        if self.mdc_scope == "own" and not (callsign and self._match_own_callsign(callsign)):
+        if not self._scope_allows(self.mdc_scope, callsign):
             return None
         for rx in self.mdc_plate_res:
             mm = rx.search(body)
@@ -1239,6 +1466,9 @@ class Flagger:
                 flags.append(call)
 
         for line in self._stabilize(lines):
+            # Reset per line: set to True by _scope_allows whenever a feature
+            # declined this line because it belongs to another unit.
+            self._scope_refusal = False
             # A PM, an OOC line or a /me is not radio traffic, whatever it says.
             if self._is_ignored_channel(line):
                 continue
@@ -1288,6 +1518,11 @@ class Flagger:
                 continue
             if self._is_own_message(line):
                 continue
+            # A specific feature already decided this line is not ours. Do NOT
+            # let the catch-all radio handler announce it anyway - that is what
+            # made 'code six / scope: own' read out everybody else's traffic.
+            if self._scope_refusal:
+                continue
             is_911 = any(p.search(line) for p in self.patterns)
             if not is_911:
                 radio = self._parse_radio(line)
@@ -1331,10 +1566,30 @@ class Flagger:
         if not self.radio_enabled:
             return None
         body = self._strip_speaker_meta(line)
-        if not body or not _RADIO_KEYWORDS.search(body):
+        if not body:
             return None
         if len(body) < self.min_body_length:
             return None
+
+        # A transmission is real radio traffic if it carries a literal code
+        # word OR if the intent reader recognises an actual incident or a
+        # request for help. The old gate was keyword-only, so anything a
+        # player phrased naturally was silently dropped: "I need backup on
+        # Calais" and "active brawl at Hawick's Clothing, roll backup" both
+        # produced nothing at all.
+        keyworded = bool(_RADIO_KEYWORDS.search(body))
+        sense = None
+        if radio_intent is not None:
+            try:
+                sense = radio_intent(body)
+            except Exception:
+                sense = None
+        # Out-of-character chatter never takes the air, whatever it contains.
+        if sense is not None and sense.meta:
+            return None
+        if not keyworded and (sense is None or not sense.actionable):
+            return None
+
         if not _URGENT_RE.search(body) and self._looks_like_garbage(body):
             return None
         m2 = _CALLSIGN_RE.match(body)
@@ -1343,7 +1598,18 @@ class Flagger:
             return None
         if not self._is_new(body):
             return None
-        return {"type": "radio", "body": body, "callsign": callsign, "raw": body}
+
+        flag = {"type": "radio", "body": body, "callsign": callsign, "raw": body}
+        if sense is not None:
+            # Carry the grade forward so the brain does not have to re-read the
+            # line with the 911-call lexicon, and so dispatch can name the
+            # incident, the location and the response code on the air.
+            flag["needs"] = sense.request
+            flag["priority"] = bool(sense.priority)
+            flag["location"] = sense.location
+            flag["incident_label"] = sense.incident
+            flag["intent"] = sense.as_dict()
+        return flag
 
     def process_lines(self, lines: list[str]) -> list[str]:
         return [f["body"] for f in self.process(lines) if f["type"] == "chat"]

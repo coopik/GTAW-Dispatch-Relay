@@ -6,6 +6,333 @@
 > only be misleading, so they have been removed entirely. 1.4.0 is the first release of the
 > rebuilt app.
 
+## 1.6.0
+
+A bug-fix and feature release focused on the four things users kept reporting:
+the alert tone firing on routine calls, code six scope leaking other units, the
+voice changing character mid-shift, and vehicle alarms reading a car model as a
+location. Plus three new subsystems and a redesigned interface.
+
+### The brain now reads plain-language unit traffic (no code word needed)
+
+Typing `25T15, I need backup on Calais.` produced nothing at all. Neither did
+`25T15, active brawl at Hawick's Clothing, roll backup`. You had to say "code
+six" before the app would react to anything you said on the radio.
+
+Two independent faults stacked up:
+
+1. **The radio parser was a keyword whitelist.** A transmission only counted as
+   radio traffic if it literally contained `code six`, `shots fired`,
+   `in pursuit`, `roll me`, and so on. `roll backup` was not in the list, and
+   neither was `brawl`, so the second line was discarded before anything else
+   ran.
+2. **`radio` was not on the brain's bypass list.** Anything that did survive
+   the parser was then scored with the 911-call lexicon, which contains no
+   backup-request signal whatsoever. A pure backup request scored **0**, and
+   was suppressed with `no dispatchable content (score 0 < 18)`.
+
+There is now a real intent reader (`modules/intent.py`) that reads every line
+of unit traffic the way a dispatcher would, and grades it on three questions:
+
+- **What is being asked for?** Backup (Code 3) or an additional unit (Code 2).
+- **What happened?** Nineteen incident categories, from officer-needs-help and
+  hostage down to traffic stops and one-in-custody, recognised from plain
+  English *and* from penal codes (187, 211, 207, 242, 415, 459, 10851, 23152).
+- **Where?** Resolved against the street/district gazetteer, so typos are
+  corrected and the reporting district can be worked out.
+
+In-progress wording (`in progress`, `right now`, `active`) and escalators
+(`multiple`, `crowd`, `gang`) raise the grade. Out-of-character chatter is
+rejected outright, and information requests are not treated as requests for
+units, so `anyone know where the supervisor is` stays off the air.
+
+Both of the reported lines now broadcast:
+
+```
+25T15, I need backup on Calais.
+  -> All units, twenty-five Tom fifteen is requesting backup at Calais,
+     Calais. R D, fourteen fifty five. Code 3, respond emergency and identify.
+
+25T15, active brawl at Hawick's Clothing, roll backup
+  -> All units, twenty-five Tom fifteen reports a fight in progress at
+     Hawick's Clothing, Hawick's Clothing and is requesting backup.
+     R D, twelve twenty one. Code 3, respond emergency and identify.
+```
+
+Because the intent reader already knows the incident, the location and the
+request, the broadcast now names all three plus the RD and the response code,
+instead of reading the unit's own words back at it.
+
+### Reporting districts survive the AI rewrite
+
+The Test Voice call, and every real call, could lose its RD. RDs are worked out
+deterministically from the location, but when an API key is configured the
+finished call-out is passed to the model for a rewrite, and the model
+paraphrases freely - frequently dropping the RD, and sometimes the incident
+number with it. The offline call-out had the RD all along; the rewrite was
+throwing it away.
+
+The RD is now re-attached after any rewrite that lost it, and never doubled up
+when it is already there. Officer-distress and pursuit broadcasts include the
+RD too, and pursuits now explicitly say "Code 3".
+
+### Fixed: pursuit locations swallowed a word
+
+`suspect is fleeing on foot on Calais Avenue` was broadcast as "in pursuit at
+**foot on** Calais Avenue". The pursuit branch scraped the location out of the
+raw text with its own matcher instead of using the gazetteer-corrected one.
+All radio broadcasts now prefer the resolved location.
+
+### The alert tone no longer plays on non-priority calls
+
+With `alert.scope: priorities`, the tone still played on ordinary Code 2 calls.
+
+The priority was decided correctly when the call-out was written, then thrown
+away and re-guessed by pattern-matching the finished speech. That pattern
+matched `burglary`, `fire`, `crash`, `threat` and `traffic collision`, so a cold
+burglary report already correctly graded Code 2 was re-classified as a priority
+on its way to the speaker.
+
+The response code the dispatcher actually broadcast is now carried through the
+pipeline to the alert stage. Code 3 means priority; Code 2 does not. The keyword
+fallback was deleted rather than patched, because guessing was the bug. When the
+priority genuinely cannot be determined, the call is treated as routine instead
+of assumed urgent.
+
+### code six with scope own no longer flags everybody
+
+Two separate faults stacked on top of each other.
+
+1. Call-sign comparison was a loose prefix match, so `1A12` could match another
+   unit's sign. It is now an exact match, and phonetic forms are normalised
+   first, so `1-Adam-12`, `1 Adam 12`, `1adam12` and `1A12` are all recognised
+   as the same unit.
+2. The actual cause: when the code-six parser correctly decided "this is not my
+   unit", it returned nothing, and the line then fell through to the generic
+   radio-traffic handler at the end of the pipeline, which announced it anyway.
+   Every scope-gated feature had this hole.
+
+The pipeline now records when a feature has deliberately refused a line, and the
+catch-all handler skips those lines instead of re-announcing them. All eight
+scope-gated features (CAD updates, code six, clear, code seven, OPG, end of
+watch, out status, MDC) route through one shared gate.
+
+If a scope is set to `own` and no call signs are configured, the app now reports
+that state instead of silently answering every unit.
+
+### The voice no longer changes tone, speed or pitch
+
+Three independent causes, all fixed:
+
+- Silent provider fallback. A failing ElevenLabs key fell back to Edge and then
+  to Windows SAPI, three completely different voices. That is the "fast and
+  excited, then slow, then very bad" report. New `tts.allow_fallback` setting:
+  leave it on to always get audio, or turn it off to pin one voice and get a
+  clear log line on failure instead of a stranger's voice. Failed ElevenLabs
+  requests now explain themselves, including specific messages for 401 (the key
+  is missing the Text to Speech permission) and 429 (quota).
+- Unlocked ElevenLabs voice settings. Only `stability` and `similarity_boost`
+  were sent, so ElevenLabs re-acted the emotion of every request. Default
+  stability raised 0.5 to 0.85, `style` pinned to 0, `use_speaker_boost`
+  enabled, and a fixed `speed` and `seed` added.
+- The chipmunk voice. Providers return audio at 16-48 kHz, and audio played at
+  the wrong rate is pitch-shifted. Everything is now resampled to a single
+  `output_sample_rate` (24 kHz) and loudness-normalised, so pitch cannot shift
+  and volume no longer jumps between call-outs. Verified across 16/22.05/24/
+  44.1/48 kHz inputs with duration held to within a millisecond.
+
+Text is also flattened before synthesis: `!!!`, ellipses, dashes and SHOUTED
+WORDS all make TTS engines speed up and raise pitch. Real abbreviations (RD,
+TAC, EMS, LAPD, BOLO) are preserved. The system prompt now explicitly forbids
+exclamation marks and capitals, since a real RTO reads a homicide in the same
+flat tone as a parking complaint.
+
+### Vehicle alarms no longer read the car model as the location
+
+In-game security firm notifications look like:
+
+```
+Security Firm: vehicle alarm was set off on Tavros closest street: Alta Street
+```
+
+The parser took the text after "set off on" as the location, so it broadcast
+"location Tavros", a motorcycle.
+
+There is now a gazetteer of roughly 400 GTA V vehicle models. The parser
+identifies the model and reports it as the vehicle, prefers the
+`closest street:` value for the location, rejects any location candidate that is
+a known vehicle model, and prefers candidates that match a real street or
+district.
+
+Vehicle alarms are now enabled by default, since they work correctly.
+
+### New: the Brain, it knows what to flag and what not to
+
+The flagger finds candidates; the brain decides whether a candidate is a real
+incident worth radio traffic. Previously anything matching a keyword was read
+aloud, so the dispatcher solemnly broadcast OOC chatter, hang-ups, prank calls,
+"what time does the station open", and the same robbery four times.
+
+It scores weapons, violence, medical, fire, in-progress wording, property crime,
+collisions and whether a location was given, then subtracts for out-of-character
+chatter, tests and cancellations, information requests, hang-ups and routine
+complaints. Bare acknowledgements, keysmash and duplicates within a two-minute
+window are rejected outright.
+
+Fully offline and deterministic: no tokens, no added latency. Tunable via
+`brain.threshold`, with `brain.log_decisions` to see exactly why anything was
+suppressed. Unit traffic always bypasses it, because your `scope` settings
+already decided whether you want to hear it.
+
+### New: GTA V streets, districts and typo correction
+
+A gazetteer of 242 streets, 85 districts and 46 landmarks across Los Santos and
+Blaine County, plus the numbered highways. Caller locations are corrected before
+anything is spoken:
+
+| Caller typed | Dispatcher says |
+|---|---|
+| Little Soeul | Little Seoul |
+| Vinwood Blvd | Vinewood Boulevard |
+| Innocense Blvd | Innocence Boulevard |
+| Sandy Shorez | Sandy Shores |
+| Paleto Bey | Paleto Bay |
+| Del Pero | Del Perro |
+
+Abbreviations are expanded (Blvd to Boulevard) and intersections formatted (Alta
+and Spanish becomes Alta Street and Spanish Avenue). It deliberately refuses to
+guess: nonsense, a house, or a vehicle model does not match a street, so the app
+falls back to "refer to CAD for location" instead of inventing somewhere.
+Lookups are indexed and LRU-cached, and `rapidfuzz` is used when installed for
+roughly a 10x speedup.
+
+### New: RDs on every 911 call
+
+Real LAPD broadcasts close with the incident number and reporting district
+("...Incident 171 in RD 193"). Every call-out with a location now does too:
+
+> All units, a 302 burglary at Power Street. ... Incident four one two two.
+> R D, oh one forty six. Code 2. Units to handle, identify.
+
+Always the letters "R D", never the words "reporting district". Always exactly
+four digits, spoken in two-and-two pairs: 1313 becomes "thirteen thirteen", 4051
+becomes "forty fifty one", 2010 becomes "twenty ten", 0105 becomes "oh one oh
+five". RDs are invented but stable, so the same location always gets the same RD
+across restarts, and `Grove St` matches `Grove Street`. The first two digits
+derive from the district's division, so nearby streets get related RDs.
+
+### Improved dispatch realism
+
+Based on research into how LAPD RTOs actually talk on the air:
+
+- The LAPD double-call is **kept**, because it is correct. Real RTOs say the
+  address twice for clarity over a noisy radio ("at Grove Street, Grove
+  Street"), exactly as they repeat a unit's call sign ("1 Adam 12, 1 Adam 12").
+  It is now controlled by `llm.repeat_location`, which defaults to `true`. Set
+  it to `false` only if you prefer the address stated once.
+- Incident number and RD now close the broadcast, in that order, matching real
+  LAPD format.
+- The dispatcher no longer identifies itself. An RTO addresses the unit and then
+  talks; the operator is never named on the air.
+- Tactical channels are requested through Control ("refer to TAC-1").
+- Delivery is explicitly flat and identical on every call.
+
+### Redesigned interface
+
+A dispatch-console look, rebuilt around a single theme definition so both modes
+are consistent everywhere. Light mode is a clean high-contrast day watch; dark
+mode is a proper CAD terminal, near-black navy with amber accents for live radio
+traffic and green/red status lamps. New semantic colours distinguish priority
+(Code 3), routine (Code 2) and brain-suppressed entries at a glance.
+
+### The Update button now installs a re-released build
+
+`Check for updates` reported "You are up to date" and did nothing whenever the
+published release carried the same version number as the installed build.
+
+The check was a strict greater-than comparison: `1.6.0` is not newer than
+`1.6.0`, so a rebuilt and re-uploaded v1.6.0 release was refused. Anyone already
+on 1.6.0 was permanently locked out of every fix published under that tag.
+
+Version equality is now treated as installable:
+
+- Pressing **Check for updates** manually always offers the newest published
+  build, even at the same version, and says so: "You already have 1.6.0. This
+  will reinstall the latest published build of it."
+- The quiet check on startup follows the new `updates.allow_reinstall` setting.
+  Leave it `true` to be told about rebuilds, or set it `false` to be notified
+  only about genuinely higher version numbers while the manual button still
+  forces a reinstall.
+- If a release has no installer attached, the app now says so and points at the
+  release page instead of reporting success and changing nothing.
+
+### code six now separates backup from an additional unit
+
+The brain treated every code six as routine. `code6` is on the list of types
+that bypass scoring, and that bypass hardcoded the priority to false, so no code
+six could ever raise the alert tone.
+
+Worse, "requesting backup" sat in the same pattern that diverts a transmission
+away from the code-six parser. A unit going code six and asking for backup lost
+the code six entirely and was re-read as ordinary radio traffic.
+
+Now:
+
+- **Backup** - also help, assistance, a cover unit, expedite - is an emergency.
+  It is broadcast Code 3 and raises the alert tone: "All units, one Adam twelve
+  is requesting backup at Grove Street. Code 3, units responding, identify."
+- **An additional unit**, a supervisor or an air unit stays routine and is
+  broadcast Code 2.
+- Emergencies mentioned in passing are picked up from the body of the
+  transmission, not just from an explicit request. "Code six on Adam's Apple,
+  I've got a body on the ground" escalates to Code 3 on its own. The same
+  applies to man down, unresponsive, not breathing, no pulse, DOA, GSW, gunshot,
+  bleeding, stabbed, hostage, overdose, a weapon drawn and a fight in progress.
+
+### K9 and spelled-out call signs
+
+Canine call signs were not recognised in any form. `K9 one`, `K9 1`, `K9-1`,
+`K9 CH4`, `canine 1` and supervisor signs such as `R30K9` all failed to match,
+so a canine unit could not use `scope: own` at all.
+
+All of those now parse, and every spelling of one unit resolves to the same
+unit, so `K9 one`, `K9-1` and `Canine 1` are interchangeable.
+
+Spelled-out call signs were recognised but read aloud wrong. Because the speech
+builder walked the sign one character at a time, `25 Tom 15` came out as
+"twenty-five Tom Ocean Mary fifteen" and `2 Adam 55` as "two Adam David Adam
+Mary fifty-five". Whole words are now kept intact, so `25 Tom 15` and `25T15`
+are both read "twenty-five Tom fifteen". NATO spellings are folded onto the LAPD
+word for the same letter, so `2 Alpha 55` is read "two Adam fifty-five", and a
+canine unit is read "K nine", never "King nine".
+
+### Rewritten in-app tutorial
+
+The built-in Tutorial page was seven short cards. It is now a twelve step
+walkthrough covering installation, chat-log capture, choosing a voice provider,
+creating an ElevenLabs key with the Text to Speech permission, Smart Dispatch
+keys, call signs including canine and spelled-out forms, flagging scope, code
+six backup versus additional, alerts, streets and RDs, going live, and presets
+and updating.
+
+### Security
+
+An ElevenLabs API key and a Discord webhook URL were committed in `config.yaml`.
+Both have been cleared, and both settings now read from environment variables
+(`ELEVENLABS_API_KEY`, `DISPATCH_RELAY_WEBHOOK`) so keys no longer end up in a
+shared config or a zip. If you used the previous build, rotate both credentials;
+anyone with that archive has them.
+
+### Documentation
+
+`README.md` fully rewritten as a step-by-step tutorial: install, chat log setup,
+ffmpeg, and all four voice providers; how to obtain keys from ElevenLabs, Groq,
+OpenAI and a local model; the exact ElevenLabs key scopes (Text to Speech = has
+access, everything else off) and why the wrong scopes caused the voice to change;
+a full explanation of how Smart Dispatch works, its two engines and how to turn
+it on and verify it; the new brain, geo and RD features; a complete config
+reference; troubleshooting; and a performance tuning section.
+
 ## 1.5.7
 
 ### Criminal points are no longer the subject's age

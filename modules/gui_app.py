@@ -26,33 +26,64 @@ except Exception:
 try:
     from modules.app_paths import APP_VERSION
 except Exception:
-    APP_VERSION = "1.5.7"
+    APP_VERSION = "1.6.0"
 
+# ---------------------------------------------------------------------------
+# Dispatch console theme (1.6.0 redesign)
+#
+# Every value is a (light, dark) pair, so restyling the whole app is done here
+# and nowhere else.
+#
+# Light  = "day watch": clean, high-contrast, slightly cool paper.
+# Dark   = "night watch": a real CAD terminal. Near-black navy, amber accents
+#          for live radio traffic, and green/red status lamps.
+# ---------------------------------------------------------------------------
 PALETTE = {
-    "page": ("#f4f6fb", "#070b14"),
-    "sidebar": ("#ffffff", "#0b1220"),
-    "card": ("#ffffff", "#101a2c"),
-    "card_alt": ("#f1f5fb", "#16233a"),
-    "border": ("#e3e9f3", "#1f2d49"),
-    "text": ("#0c1424", "#e9eff8"),
-    "muted": ("#657388", "#93a3ba"),
-    "primary": ("#1d6fe0", "#3b8bf5"),
-    "primary_hover": ("#1657b4", "#2a76dd"),
-    "start": ("#0e9f6e", "#20c997"),
-    "start_hover": ("#0b7f58", "#13a97e"),
-    "stop": ("#d92d3e", "#f05365"),
-    "stop_hover": ("#b21f2f", "#d92d3e"),
-    "neutral": ("#e9edf5", "#1a2740"),
-    "neutral_hover": ("#dce3ef", "#26375a"),
-    "idle": ("#93a3ba", "#5f6f88"),
-    "live": ("#0e9f6e", "#20c997"),
-    "speak": ("#e2670a", "#fb9f4a"),
+    # Surfaces
+    "page": ("#eef1f7", "#05080f"),
+    "sidebar": ("#ffffff", "#080d18"),
+    "card": ("#ffffff", "#0d1523"),
+    "card_alt": ("#f2f5fa", "#131e30"),
+    "border": ("#dde4ef", "#1d2b45"),
+
+    # Type
+    "text": ("#0a1220", "#e8eef8"),
+    "muted": ("#61708a", "#8698b3"),
+
+    # Primary action - LAPD navy in light, badge blue in dark
+    "primary": ("#12509b", "#3d8ef7"),
+    "primary_hover": ("#0d3d78", "#2b78e0"),
+
+    # Start / stop the watch
+    "start": ("#0a8f5f", "#1ecb92"),
+    "start_hover": ("#07704a", "#12a876"),
+    "stop": ("#c62236", "#f04f62"),
+    "stop_hover": ("#9d1828", "#d02a3d"),
+
+    # Secondary buttons
+    "neutral": ("#e7ecf5", "#17233a"),
+    "neutral_hover": ("#d8e1ef", "#223252"),
+
+    # Status lamps
+    "idle": ("#8d9cb3", "#5a6a83"),
+    "live": ("#0a8f5f", "#1ecb92"),
+    "speak": ("#d9600a", "#ffab4d"),
+
+    # --- New in 1.6.0 -----------------------------------------------------
+    "accent": ("#b8500f", "#ffb765"),      # amber: live radio traffic
+    "priority": ("#c62236", "#ff5f70"),    # Code 3 / officer needs help
+    "routine": ("#12509b", "#5f9dfb"),     # Code 2
+    "suppressed": ("#8d9cb3", "#4f5e76"),  # skipped by the brain
+    "ok": ("#0a8f5f", "#1ecb92"),
+    "warn": ("#b07403", "#ffc548"),
+    "track": ("#e2e8f2", "#111c2e"),       # progress/meter troughs
+    "mono_bg": ("#f7f9fc", "#070c16"),     # console / transcript background
 }
 
-IC_DARK = "#334155"
-IC_DARK_ON = "#cbd5e1"
-IC_PRIMARY = "#1d6fe0"
-IC_PRIMARY_ON = "#7db4fb"
+IC_DARK = "#33415a"
+IC_DARK_ON = "#c9d5e6"
+IC_PRIMARY = "#12509b"
+IC_PRIMARY_ON = "#7cb3fb"
 IC_WHITE = "#ffffff"
 
 
@@ -1285,36 +1316,77 @@ class DispatchApp(ctk.CTk):
                      font=self.f_b, text_color=PALETTE["muted"]).grid(
             row=1, column=0, sticky="w", padx=26, pady=(0, 8))
         steps = [
-            ("target", "1. Point it at your chat log",
+            ("target", "1. Install and open the app",
+             "Run the installer, then launch 911 Dispatch Relay. Your settings live under "
+             r"%APPDATA%\911 Dispatch Relay, so they survive every update. Nothing is "
+             "installed into GTA V and no game files are touched."),
+            ("target", "2. Point it at your chat log",
              "Nothing to set up. FiveM does not save the chat anywhere, so the app reads it "
              "straight out of the running game over FiveM's own local debug port - read-only, "
              "localhost only - and keeps a copy at "
-             r"%APPDATA%\911 Dispatch Relay\live-session.txt. Just start FiveM and press "
-             "Start. If live capture ever stops working, run the GTA World Chat Log Assistant "
+             r"%APPDATA%\911 Dispatch Relay\live-session.txt. Start FiveM, then press Start "
+             "here. If live capture ever stops working, run the GTA World Chat Log Assistant "
              "and press Detect file, and the app reads its log instead. RAGE MP .storage files "
              "still work too."),
-            ("mic", "2. Set up your voice",
-             "Open Settings > Voice (TTS). Keep ElevenLabs for the best quality and paste your API "
-             "key and voice ID, or switch the provider to a free offline voice. Use Test Voice on "
-             "the Dashboard to hear it."),
-            ("chip", "3. (Optional) Turn on Dispatch AI",
-             "Settings > Dispatch AI lets an LLM rewrite calls into realistic LAPD radio traffic. "
-             "Leave the API key blank to use the built-in offline generator, or add a key from "
-             "OpenAI, Groq, or any OpenAI-compatible provider."),
-            ("flag", "4. Choose what gets flagged",
-             "Settings > Flagging controls 911 chat lines, MDC / 911 call cards, and unit radio "
-             "traffic on the base channel. Tune these if too much or too little is being read."),
-            ("shield", "5. Add your call signs",
-             "Settings > Your call signs tells the app which units are yours, so it answers your "
-             "CAD, code six, code seven and clearing traffic and reads your call sign back with "
-             "the police phonetic alphabet."),
-            ("play", "6. Go live",
-             "Press Start on the Dashboard. The status turns green (Listening) and orange "
-             "(Speaking) while audio plays. Recent calls and the activity log update live. Press "
-             "Stop to pause."),
-            ("save", "7. Save presets",
-             "Use the Presets bar in Settings to save and reload complete configurations - handy "
-             "for different servers or characters."),
+            ("mic", "3. Pick a voice provider",
+             "Settings > Voice (TTS). Provider 'edge' is free, needs no key and sounds good, so "
+             "start there and press Test Voice on the Dashboard. Move to ElevenLabs only if you "
+             "want the best quality. Leave Normalize audio ON - that is what keeps every "
+             "call-out at the same volume and pitch instead of drifting high or fast."),
+            ("mic", "4. ElevenLabs key and permissions (optional)",
+             "Open elevenlabs.io, log in, then your avatar > API Keys > Create API Key. The key "
+             "MUST have the 'Text to Speech' permission ticked or the app gets a 401 and stays "
+             "silent. Paste it into Settings > Voice (TTS) > API key. For the voice, open "
+             "Voices, pick one, use its ... menu > Copy voice ID, and paste that into Voice ID. "
+             "Free accounts have a monthly character limit; if you run out the log shows a 429."),
+            ("chip", "5. Turn on Dispatch AI (optional)",
+             "Settings > Dispatch AI rewrites raw 911 text into real LAPD radio phrasing. Leave "
+             "the API key blank and the built-in offline generator does it for free. For sharper "
+             "wording, get a key from platform.openai.com (paid, model gpt-4o) or "
+             "console.groq.com (free tier, model llama-3.3-70b-versatile). Check the Base URL "
+             "ends in /v1. Keep 'Emergency only' ON to spend tokens on priority calls only."),
+            ("shield", "6. Add your call signs (important)",
+             "Settings > Your call signs is what makes the app answer YOUR unit and nobody "
+             "else's. One per line. Every spelling of the same unit is accepted and treated as "
+             "identical: 1-Adam-12, 1A12, 1 Adam 12, 25 Tom 15, 2 Adam 55. Canine units work "
+             "too - K9-1, K9 1, K9 one, Canine 1 - as do supervisor signs like R30K9. If you "
+             "leave this empty, every feature set to 'own' answers nothing at all. That is "
+             "deliberate, so it can never read other players' traffic by accident."),
+            ("flag", "7. Choose what gets flagged",
+             "Settings > Flagging decides what gets read out: 911 chat lines, MDC and 911 call "
+             "cards, and unit radio traffic. Each unit feature - code six, code seven, CAD "
+             "updates, clearing, MDC lookups - has its own 'applies to' setting. 'Own' answers "
+             "only your call signs; 'All' answers every unit on the channel. If the app is "
+             "reading other people's traffic, that setting is on 'All'."),
+            ("flag", "8. Code six, backup and additional",
+             "Going code six marks you out for investigation, and the app also listens to the "
+             "rest of that transmission. Asking for BACKUP - or help, assistance, a cover unit - "
+             "is an emergency and goes out Code 3. Asking for an ADDITIONAL unit, a supervisor "
+             "or an air unit is routine and goes out Code 2. If you volunteer an emergency "
+             "mid-sentence, such as 'code six on Adam's Apple, I have got a body on the "
+             "ground', it is escalated to Code 3 for you."),
+            ("flag", "9. Alerts and priorities",
+             "Settings > Alert plays a tone before the voice. Set 'applies to' to Priorities "
+             "only and the tone fires on Code 3 traffic exclusively - shots fired, backup "
+             "requests, panic buttons - and stays quiet for routine Code 2 calls and landline "
+             "reports."),
+            ("chip", "10. Street names and reporting districts",
+             "The app knows the GTA V street, district and landmark list, so a caller typing "
+             "'Little Soeul' is still read as Little Seoul. Every call-out also carries a "
+             "four digit reporting district, spoken the way LAPD says it: 'R D, oh two seventy "
+             "two'. The address itself is deliberately said twice, which is real LAPD practice "
+             "for a noisy radio. All three can be turned off in Settings."),
+            ("play", "11. Go live",
+             "Press Start on the Dashboard. The dot turns green for Listening and amber while "
+             "Speaking. Recent calls and the activity log fill in as traffic arrives, and Stop "
+             "pauses everything. If nothing appears, confirm FiveM is running and that you are "
+             "on a channel the app is set to read."),
+            ("save", "12. Presets and updates",
+             "The Presets bar in Settings saves and reloads whole configurations, which is handy "
+             "for different servers or characters. To update, press Check for updates on the "
+             "Dashboard: it installs the newest published release even when the version number "
+             "has not changed, so a rebuilt v1.6.0 still applies. The app closes and reopens on "
+             "its own when it finishes."),
         ]
         for i, (icon, title, body) in enumerate(steps):
             card = self._card(page)
@@ -1457,7 +1529,9 @@ class DispatchApp(ctk.CTk):
 
     def _upd_check_worker(self, up, manual, popup=False):
         try:
-            found, info, msg = up.check()
+            # A manual check forces the offer even when the published version
+            # matches, so a rebuilt release under the same tag still installs.
+            found, info, msg = up.check(force=bool(manual))
         except Exception as exc:
             found, info, msg = False, None, "Update check failed: %s" % exc
         self.after(0, lambda: self._upd_apply_check(found, info, msg, manual, popup))
